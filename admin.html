@@ -123,8 +123,6 @@
   if(document.readyState==='loading'){
     document.addEventListener('DOMContentLoaded',tryAutoLogin);
   } else { tryAutoLogin(); }
-
-  // ── NAV ──
   window.go=function(id){
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
     document.getElementById(id).classList.add('on');
@@ -541,6 +539,9 @@
       await openBookingDetail(bookingDetailKey);
     }finally{showLoading(false);}
   };
+
+  // ── 자동 로그인 (스크립트 마지막에서 실행) ──
+  tryAutoLogin();
 </script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
