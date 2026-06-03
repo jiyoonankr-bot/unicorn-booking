@@ -13,15 +13,15 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
-  const ADMIN_PASS = 'dbslzhs157600@@'; // ← 비밀번호 변경하세요
+  const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
 
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
@@ -109,7 +109,7 @@
 
   // ── 로그인 상태 자동 복원 ──
   async function tryAutoLogin(){
-    if(sessionStorage.getItem('admin_logged_in')==='true'){
+    if(localStorage.getItem('admin_logged_in')==='true'){
       document.getElementById('tab-bar').style.display='flex';
       initSelects();
       buildDowChecks();
@@ -154,7 +154,8 @@
     const pw=document.getElementById('admin-pw').value;
     if(pw===ADMIN_PASS){
       document.getElementById('login-err').style.display='none';
-      sessionStorage.setItem('admin_logged_in','true');
+      sessionStorage.removeItem('admin_logged_in');
+      localStorage.setItem('admin_logged_in','true');
       document.getElementById('tab-bar').style.display='flex';
       initSelects();
       buildDowChecks();
@@ -169,7 +170,7 @@
   };
 
   window.doLogout=function(){
-    sessionStorage.removeItem('admin_logged_in');
+    localStorage.removeItem('admin_logged_in');
     _cache={submissions:null,slots:null};
     document.getElementById('tab-bar').style.display='none';
     document.getElementById('admin-pw').value='';
@@ -199,8 +200,29 @@
     }finally{showLoading(false);}
   }
 
-  window.setDashFilter=function(f){adminFilter=f;renderDashList();
+  // ── 수강생 삭제 ──
+  window.deleteRecord=async function(key, e){
+    e.stopPropagation();
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      const rec=allData[key];
+      // 예약 중이었으면 슬롯 다시 오픈
+      if(rec?.booking?.slotId && !rec.booking.cancelledAt){
+        const sData=await getAllSlots();
+        if(sData[rec.booking.slotId]) await saveSlot(rec.booking.slotId,{...sData[rec.booking.slotId],open:true});
+      }
+      await deleteDoc(doc(db,STORE_COL,key));
+      if(_cache.submissions) delete _cache.submissions[key];
+      showToast('🗑 삭제됐습니다','#E8A020');
+      await loadDash();
+    }finally{showLoading(false);}
+  };
+
+  window.setDashFilter=function(f){
+    adminFilter=f;
     document.querySelectorAll('#dash-filters .ftag').forEach(b=>b.classList.toggle('on',b.textContent.includes(STATUSES[f]?.label)||f==='all'&&b.textContent.includes('전체')));
+    renderDashList();
   };
 
   function renderDashList(){
@@ -216,7 +238,10 @@
             <div class="rec-meta">${r.phone}</div>
             <div class="rec-date">제출: ${new Date(r.submittedAt).toLocaleDateString('ko-KR')}</div>
           </div>
-          ${badge(r.status)}
+          <div style="display:flex;align-items:center;gap:8px">
+            ${badge(r.status)}
+            <button onclick="deleteRecord('${r.key}',event)" style="width:24px;height:24px;border-radius:50%;border:1px solid #ddd;background:#f5f5f5;color:#999;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">×</button>
+          </div>
         </div>
       </div>`).join('');
   }
@@ -442,9 +467,12 @@
               <div class="rec-date${isCancelled?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
               ${histCount>0?`<div style="font-size:11px;color:#E05050;margin-top:3px">취소 이력 ${histCount}건</div>`:''}
             </div>
-            <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${isCancelled?'#999':'#7B68EE'};background:${isCancelled?'#f0f0f0':'rgba(123,104,238,.12)'}">
-              ${isCancelled?'취소됨':'예약 중'}
-            </span>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${isCancelled?'#999':'#7B68EE'};background:${isCancelled?'#f0f0f0':'rgba(123,104,238,.12)'}">
+                ${isCancelled?'취소됨':'예약 중'}
+              </span>
+              <button onclick="deleteRecord('${r.key}',event)" style="width:24px;height:24px;border-radius:50%;border:1px solid #ddd;background:#f5f5f5;color:#999;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">×</button>
+            </div>
           </div>
         </div>`;
       }).join('');
