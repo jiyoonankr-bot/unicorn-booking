@@ -13,15 +13,15 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
-  const ADMIN_PASS = 'dbslzhs157600@@'; // ← 비밀번호 변경하세요
+  const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
 
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
@@ -43,18 +43,33 @@
   let detailKey=null, bookingDetailKey=null;
   let currentSubTab='slots';
 
-  // ── FIRESTORE HELPERS ──
-  async function getAllSubmissions(){
+  // ── 캐시 (Firestore 조회 최소화) ──
+  let _cache = { submissions: null, slots: null };
+
+  async function getAllSubmissions(forceRefresh=false){
+    if(!forceRefresh && _cache.submissions) return {..._cache.submissions};
     const snap=await getDocs(collection(db,STORE_COL));
-    const r={}; snap.forEach(d=>r[d.id]=d.data()); return r;
+    const r={}; snap.forEach(d=>r[d.id]=d.data());
+    _cache.submissions=r; return {...r};
   }
-  async function saveSubmission(key,data){ await setDoc(doc(db,STORE_COL,key),data); }
-  async function getAllSlots(){
+  async function saveSubmission(key,data){
+    await setDoc(doc(db,STORE_COL,key),data);
+    _cache.submissions=_cache.submissions||{}; _cache.submissions[key]=data;
+  }
+  async function getAllSlots(forceRefresh=false){
+    if(!forceRefresh && _cache.slots) return {..._cache.slots};
     const snap=await getDocs(collection(db,SLOTS_COL));
-    const r={}; snap.forEach(d=>r[d.id]=d.data()); return r;
+    const r={}; snap.forEach(d=>r[d.id]=d.data());
+    _cache.slots=r; return {...r};
   }
-  async function saveSlot(id,data){ await setDoc(doc(db,SLOTS_COL,id),data); }
-  async function deleteSlotDoc(id){ await deleteDoc(doc(db,SLOTS_COL,id)); }
+  async function saveSlot(id,data){
+    await setDoc(doc(db,SLOTS_COL,id),data);
+    _cache.slots=_cache.slots||{}; _cache.slots[id]=data;
+  }
+  async function deleteSlotDoc(id){
+    await deleteDoc(doc(db,SLOTS_COL,id));
+    if(_cache.slots) delete _cache.slots[id];
+  }
 
   // ── AUTO COMPLETE ──
   async function autoComplete(data){
@@ -92,6 +107,23 @@
     t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2400);
   }
 
+  // ── 로그인 상태 자동 복원 ──
+  async function tryAutoLogin(){
+    if(sessionStorage.getItem('admin_logged_in')==='true'){
+      document.getElementById('tab-bar').style.display='flex';
+      initSelects();
+      buildDowChecks();
+      showLoading(true);
+      try{ await Promise.all([getAllSubmissions(true),getAllSlots(true)]); }
+      finally{ showLoading(false); }
+      await loadDash();
+      go('pg-dash');
+    }
+  }
+  if(document.readyState==='loading'){
+    document.addEventListener('DOMContentLoaded',tryAutoLogin);
+  } else { tryAutoLogin(); }
+
   // ── NAV ──
   window.go=function(id){
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
@@ -122,9 +154,13 @@
     const pw=document.getElementById('admin-pw').value;
     if(pw===ADMIN_PASS){
       document.getElementById('login-err').style.display='none';
+      sessionStorage.setItem('admin_logged_in','true');
       document.getElementById('tab-bar').style.display='flex';
       initSelects();
       buildDowChecks();
+      showLoading(true);
+      try { await Promise.all([getAllSubmissions(true), getAllSlots(true)]); }
+      finally { showLoading(false); }
       await loadDash();
       go('pg-dash');
     } else {
@@ -132,11 +168,19 @@
     }
   };
 
+  window.doLogout=function(){
+    sessionStorage.removeItem('admin_logged_in');
+    _cache={submissions:null,slots:null};
+    document.getElementById('tab-bar').style.display='none';
+    document.getElementById('admin-pw').value='';
+    go('pg-login');
+  };
+
   // ── 대본 관리 ──
   async function loadDash(){
     showLoading(true);
     try{
-      allData=await getAllSubmissions();
+      allData=await getAllSubmissions(); // 캐시 사용
       allData=await autoComplete(allData);
       const list=Object.values(allData);
       document.getElementById('dash-sub').textContent=`총 ${list.length}건 제출`;
@@ -225,8 +269,8 @@
   async function loadSchedule(){
     showLoading(true);
     try{
-      slots=await getAllSlots();
-      allData=await getAllSubmissions();
+      slots=await getAllSlots(); // 캐시 사용
+      allData=await getAllSubmissions(); // 캐시 사용
 
       // 활성 예약 있는 슬롯 자동 마감
       const activeBookedSlotIds=new Set(
@@ -370,7 +414,7 @@
   async function loadBookings(){
     showLoading(true);
     try{
-      allData=await getAllSubmissions();
+      allData=await getAllSubmissions(); // 캐시 사용
       allData=await autoComplete(allData);
       const withBooking=Object.values(allData).filter(r=>r.booking);
       const active=withBooking.filter(r=>!r.booking.cancelledAt).length;
@@ -629,7 +673,10 @@ textarea.inp{resize:vertical;min-height:72px;line-height:1.6}
 <div class="page" id="pg-dash">
   <div class="hdr">
     <div class="hdr-eyebrow">Admin · 대본 관리</div>
-    <div class="hdr-title">대본 <span>검수</span></div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div class="hdr-title">대본 <span>검수</span></div>
+      <button onclick="doLogout()" style="background:rgba(255,255,255,.2);border:none;border-radius:8px;color:#fff;font-size:12px;font-weight:600;padding:5px 11px;cursor:pointer;font-family:inherit">로그아웃</button>
+    </div>
     <div class="hdr-sub" id="dash-sub">총 0건</div>
   </div>
   <div class="pad">

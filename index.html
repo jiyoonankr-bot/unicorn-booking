@@ -35,6 +35,34 @@
   let user = {}, calY, calM, selDay = null, selTime = null, selSlot = null;
   let openSlots = {};
 
+  // ── 앱 레벨 캐시 (Firestore 조회 최소화) ──
+  let _cache = { submissions: null, slots: null };
+
+  async function getAllSubmissions(forceRefresh = false) {
+    if (!forceRefresh && _cache.submissions) return {..._cache.submissions};
+    const snap = await getDocs(collection(db, STORE_COL));
+    const r = {}; snap.forEach(d => r[d.id] = d.data());
+    _cache.submissions = r;
+    return {...r};
+  }
+  async function getAllSlots(forceRefresh = false) {
+    if (!forceRefresh && _cache.slots) return {..._cache.slots};
+    const snap = await getDocs(collection(db, SLOTS_COL));
+    const r = {}; snap.forEach(d => r[d.id] = d.data());
+    _cache.slots = r;
+    return {...r};
+  }
+  async function saveSubmission(key, data) {
+    await setDoc(doc(db, STORE_COL, key), data);
+    _cache.submissions = _cache.submissions || {};
+    _cache.submissions[key] = data;
+  }
+  async function saveSlot(id, data) {
+    await setDoc(doc(db, SLOTS_COL, id), data);
+    _cache.slots = _cache.slots || {};
+    _cache.slots[id] = data;
+  }
+
   // ── UTILS ──
   function userKey(u) { return `${u.cohort}__${u.name}__${u.phone.replace(/\D/g, '')}`; }
   function fmtTime(t) {
@@ -57,31 +85,18 @@
     return `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:700;color:${s.color};background:${s.bg}">${s.icon} ${s.label}</span>`;
   }
 
-  // ── FIRESTORE HELPERS ──
-  async function getSubmission(key) {
-    const snap = await getDoc(doc(db, STORE_COL, key));
-    return snap.exists() ? snap.data() : null;
+  // ── 앱 시작 시 딱 한 번 preload ──
+  async function preload() {
+    showLoading(true);
+    try { await Promise.all([getAllSubmissions(true), getAllSlots(true)]); }
+    finally { showLoading(false); }
   }
-  async function saveSubmission(key, data) {
-    await setDoc(doc(db, STORE_COL, key), data);
+  // DOM 준비 후 preload
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', preload);
+  } else {
+    preload();
   }
-  async function getAllSubmissions() {
-    const snap = await getDocs(collection(db, STORE_COL));
-    const result = {};
-    snap.forEach(d => result[d.id] = d.data());
-    return result;
-  }
-  async function getAllSlots() {
-    const snap = await getDocs(collection(db, SLOTS_COL));
-    const result = {};
-    snap.forEach(d => result[d.id] = d.data());
-    return result;
-  }
-  async function saveSlot(id, data) {
-    await setDoc(doc(db, SLOTS_COL, id), data);
-  }
-
-  // ── AUTO COMPLETE ──
   async function autoComplete(data) {
     const now = new Date();
     for (const rec of Object.values(data)) {
@@ -169,7 +184,7 @@
   window.refreshStatus = async function() {
     showLoading(true);
     try {
-      const allData = await getAllSubmissions();
+      const allData = await getAllSubmissions(true); // 새로고침만 Firestore 재조회
       const processed = await autoComplete(allData);
       const key = userKey(user);
       const rec = processed[key];
