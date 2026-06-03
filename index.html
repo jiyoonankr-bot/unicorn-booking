@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>촬영 예약</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+  import { getFirestore, doc, getDoc, setDoc, collection, getDocs, query, where, updateDoc } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+
+  // ── Firebase 설정 (직접 채워넣으세요) ──────────────
+  const firebaseConfig = {
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  // ── 주소·주차 안내 (여기서 수정하세요) ──────────────
+  const STUDIO_ADDRESS = '서울특별시 마포구 서교동 351-11 이혜빌딩 3층';
+  const PARKING_INFO = '근처 경남주차장이 유료로 운영되고 있으니 이용해주세요.';
+
+  const STORE_COL = 'submissions';
+  const SLOTS_COL = 'slots';
+  const MONTHS = ['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
+  const DOWS = ['일','월','화','수','목','금','토'];
+
+  let user = {}, calY, calM, selDay = null, selTime = null, selSlot = null;
+  let openSlots = {};
+
+  // ── UTILS ──
+  function userKey(u) { return `${u.cohort}__${u.name}__${u.phone.replace(/\D/g, '')}`; }
+  function fmtTime(t) {
+    if (!t) return t;
+    const [h, m] = t.split(':').map(Number);
+    const ampm = h < 12 ? '오전' : '오후';
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${ampm} ${String(h12).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  function badge(status) {
+    const map = {
+      submitted: {label:'제출 완료',icon:'📤',color:'#2E9E6B',bg:'#E8F5EE'},
+      reviewing: {label:'검수 중',  icon:'🔍',color:'#E8A020',bg:'#FEF6E6'},
+      revision:  {label:'재작성 필요',icon:'✏️',color:'#E05050',bg:'#FDEAEA'},
+      approved:  {label:'예약 가능',icon:'✅',color:'#2E9E6B',bg:'#E8F5EE'},
+      booked:    {label:'예약 완료',icon:'🎬',color:'#7B68EE',bg:'#F0EEFF'},
+      completed: {label:'촬영 완료',icon:'🎥',color:'#2E9E6B',bg:'#E8F5EE'},
+    };
+    const s = map[status] || {label:status,icon:'',color:'#888',bg:'#eee'};
+    return `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 11px;border-radius:20px;font-size:12px;font-weight:700;color:${s.color};background:${s.bg}">${s.icon} ${s.label}</span>`;
+  }
+
+  // ── FIRESTORE HELPERS ──
+  async function getSubmission(key) {
+    const snap = await getDoc(doc(db, STORE_COL, key));
+    return snap.exists() ? snap.data() : null;
+  }
+  async function saveSubmission(key, data) {
+    await setDoc(doc(db, STORE_COL, key), data);
+  }
+  async function getAllSubmissions() {
+    const snap = await getDocs(collection(db, STORE_COL));
+    const result = {};
+    snap.forEach(d => result[d.id] = d.data());
+    return result;
+  }
+  async function getAllSlots() {
+    const snap = await getDocs(collection(db, SLOTS_COL));
+    const result = {};
+    snap.forEach(d => result[d.id] = d.data());
+    return result;
+  }
+  async function saveSlot(id, data) {
+    await setDoc(doc(db, SLOTS_COL, id), data);
+  }
+
+  // ── AUTO COMPLETE ──
+  async function autoComplete(data) {
+    const now = new Date();
+    for (const rec of Object.values(data)) {
+      if (rec.status === 'booked' && rec.booking && !rec.booking.cancelledAt) {
+        const [y,m,d] = rec.booking.date.replace(/[년월일 ]/g,'-').split('-').filter(Boolean).map(Number);
+        const [h,min] = rec.booking.time.split(':').map(Number);
+        const bookingDate = new Date(y, m-1, d, h, min, 0);
+        if (now > bookingDate) {
+          const updated = {...rec, status:'completed'};
+          await saveSubmission(rec.key, updated);
+          data[rec.key] = updated;
+        }
+      }
+    }
+    return data;
+  }
+
+  // ── NAV ──
+  function go(id) {
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+    document.getElementById(id).classList.add('on');
+    window.scrollTo(0, 0);
+  }
+  function showErr(el, msg) { el.textContent = msg; el.style.display = 'block'; }
+  function hideErr(el) { el.style.display = 'none'; }
+  function showLoading(show) {
+    document.getElementById('loading-overlay').style.display = show ? 'flex' : 'none';
+  }
+
+  // ── IDENT ──
+  window.identSubmit = async function() {
+    const c = document.getElementById('u-cohort').value.trim();
+    const n = document.getElementById('u-name').value.trim();
+    const p = document.getElementById('u-phone').value.trim();
+    const e = document.getElementById('ident-err');
+    if (!c||!n||!p) { showErr(e,'모든 항목을 입력해 주세요.'); return; }
+    const pClean = p.replace(/\D/g,'');
+    showLoading(true);
+    try {
+      const allData = await getAllSubmissions();
+      const processed = await autoComplete(allData);
+      const records = Object.values(processed);
+      const exact = records.find(r => r.cohort===c && r.name===n && r.phone.replace(/\D/g,'')===pClean);
+      if (exact) { user={cohort:c,name:n,phone:pClean}; renderStatus(exact); go('pg-status'); return; }
+      const byNameCohort = records.find(r => r.cohort===c && r.name===n);
+      if (byNameCohort) { showErr(e,'전화번호가 일치하지 않습니다. 다시 확인해 주세요.'); return; }
+      const byNamePhone = records.find(r => r.name===n && r.phone.replace(/\D/g,'')===pClean);
+      if (byNamePhone) { showErr(e,'기수를 다시 확인해 주세요.'); return; }
+      const byPhone = records.find(r => r.phone.replace(/\D/g,'')===pClean);
+      if (byPhone) { showErr(e,'기수와 이름을 다시 확인해 주세요.'); return; }
+      hideErr(e);
+      user = {cohort:c, name:n, phone:pClean};
+      buildScripts();
+      go('pg-scripts');
+    } finally { showLoading(false); }
+  };
+
+  // ── STATUS ──
+  function renderStatus(rec) {
+    document.getElementById('status-name').textContent = `${rec.cohort} ${rec.name}`;
+    document.getElementById('status-phone').textContent = rec.phone;
+    document.getElementById('status-badge').innerHTML = badge(rec.status);
+    const ne = document.getElementById('status-note');
+    ne.innerHTML = rec.adminNote ? `<div class="admin-note"><div class="admin-note-label">관리자 메모</div>${rec.adminNote}</div>` : '';
+    document.getElementById('status-date').textContent = rec.submittedAt ? '제출일: '+new Date(rec.submittedAt).toLocaleDateString('ko-KR') : '';
+    const ae = document.getElementById('status-action');
+    if (rec.status==='completed' && rec.booking) {
+      ae.innerHTML = `<div class="done-box"><div class="done-box-title">🎥 촬영 완료</div><div class="done-box-body">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}</div></div>`;
+    } else if (rec.status==='booked' && rec.booking) {
+      ae.innerHTML = `<div class="done-box" style="background:#F0EEFF;border-color:rgba(123,104,238,.2)"><div class="done-box-title" style="color:#7B68EE">🎬 예약 완료</div><div class="done-box-body">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}<br>📍 ${STUDIO_ADDRESS}</div></div>`;
+    } else if (rec.status==='approved' && rec.booking?.cancelledAt) {
+      ae.innerHTML = `<div class="done-box" style="background:#F5F5F5;border-color:#ddd"><div class="done-box-title" style="color:#999">취소된 예약</div><div class="done-box-body" style="text-decoration:line-through;color:#bbb">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}</div><div style="font-size:12px;color:#E05050;margin-top:6px">관리자에 의해 취소되었습니다. 새로운 일정을 예약해 주세요.</div></div>
+      <button class="btn btn-acc" onclick="openCalendar()" style="margin-top:12px">📅 새 일정 예약하기 →</button>`;
+    } else if (rec.status==='approved') {
+      ae.innerHTML = `<button class="btn btn-acc" onclick="openCalendar()">📅 촬영 일정 예약하기 →</button>`;
+    } else if (rec.status==='revision') {
+      ae.innerHTML = `<div style="font-size:13px;color:#666;text-align:center;padding:6px 0 14px;line-height:1.6">위 관리자 메모를 확인하고 노션 링크를 다시 제출해 주세요.</div>
+      <button class="btn btn-acc" onclick="resubmit()">✏️ 대본 다시 제출하기 →</button>`;
+    } else {
+      const msgs = {submitted:'검수가 완료되면 예약 버튼이 활성화됩니다.',reviewing:'검수가 진행 중입니다. 조금만 기다려 주세요.'};
+      ae.innerHTML = `<div style="font-size:13px;color:#888;text-align:center;padding:10px 0;line-height:1.6">${msgs[rec.status]||''}</div>`;
+    }
+  }
+
+  window.refreshStatus = async function() {
+    showLoading(true);
+    try {
+      const allData = await getAllSubmissions();
+      const processed = await autoComplete(allData);
+      const key = userKey(user);
+      const rec = processed[key];
+      if (rec) renderStatus(rec);
+    } finally { showLoading(false); }
+  };
+
+  window.resubmit = function() {
+    buildScripts();
+    go('pg-scripts');
+  };
+
+  // ── SCRIPTS ──
+  function buildScripts() {
+    document.getElementById('scripts-sub').textContent = `${user.cohort} ${user.name}`;
+    document.getElementById('notion-link').value = '';
+    document.getElementById('notion-guide').style.display = 'none';
+    document.getElementById('notion-link-status').textContent = '링크를 입력하면 열기 버튼이 나타납니다';
+    document.getElementById('notion-link-status').className = 'link-check-status';
+    document.getElementById('notion-link-btn').style.display = 'none';
+    document.getElementById('secret-tip').style.display = 'none';
+    document.getElementById('confirm-check-wrap').style.display = 'none';
+    document.getElementById('public-confirm').checked = false;
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = true; btn.style.opacity = '0.4'; btn.style.cursor = 'not-allowed';
+  }
+
+  window.checkNotionLink = function() {
+    const val = document.getElementById('notion-link').value.trim();
+    const guide = document.getElementById('notion-guide');
+    const btn = document.getElementById('notion-link-btn');
+    const status = document.getElementById('notion-link-status');
+    if (val.length > 5) {
+      guide.style.display = 'block';
+      if (val.startsWith('http')) {
+        btn.style.display = 'block';
+        status.textContent = '링크를 눌러 공개 접근이 가능한지 확인해 주세요';
+        status.className = 'link-check-status';
+      } else {
+        btn.style.display = 'none';
+        status.textContent = '올바른 URL 형식이 아닙니다 (https://로 시작해야 해요)';
+      }
+    } else { guide.style.display = 'none'; }
+  };
+
+  window.openNotionLink = function() {
+    const url = document.getElementById('notion-link').value.trim();
+    if (!url) return;
+    window.open(url, '_blank');
+    const s = document.getElementById('notion-link-status');
+    s.textContent = '✓ 링크를 열었습니다. 시크릿 창에서도 확인해 주세요!';
+    s.className = 'link-check-status ok';
+    document.getElementById('secret-tip').style.display = 'block';
+    document.getElementById('confirm-check-wrap').style.display = 'flex';
+  };
+
+  window.onConfirmCheck = function() {
+    const checked = document.getElementById('public-confirm').checked;
+    const btn = document.getElementById('submit-btn');
+    btn.disabled = !checked;
+    btn.style.opacity = checked ? '1' : '0.4';
+    btn.style.cursor = checked ? 'pointer' : 'not-allowed';
+  };
+
+  window.submitScripts = async function() {
+    const errEl = document.getElementById('scripts-err');
+    const notionLink = document.getElementById('notion-link').value.trim();
+    if (!notionLink) { showErr(errEl,'노션 링크를 입력해 주세요.'); return; }
+    if (!notionLink.startsWith('http')) { showErr(errEl,'올바른 URL 형식으로 입력해 주세요.'); return; }
+    if (!document.getElementById('public-confirm').checked) { showErr(errEl,'시크릿 창에서 공개 여부를 확인하고 체크해 주세요.'); return; }
+    hideErr(errEl);
+    const key = userKey(user);
+    const rec = { ...user, key, notionLink, status:'submitted', submittedAt:new Date().toISOString(), adminNote:'', booking:null };
+    showLoading(true);
+    try {
+      await saveSubmission(key, rec);
+      renderStatus(rec);
+      go('pg-status');
+    } finally { showLoading(false); }
+  };
+
+  // ── CALENDAR ──
+  window.openCalendar = async function() {
+    const now = new Date();
+    calY = now.getFullYear(); calM = now.getMonth();
+    selDay = null; selTime = null; selSlot = null;
+    showLoading(true);
+    try {
+      await loadOpenSlots();
+      renderCal();
+      document.getElementById('time-section').style.display = 'none';
+      document.getElementById('confirm-section').style.display = 'none';
+      go('pg-calendar');
+    } finally { showLoading(false); }
+  };
+
+  async function loadOpenSlots() {
+    const allSlots = await getAllSlots();
+    const allData = await getAllSubmissions();
+    const bookedSlotIds = new Set(
+      Object.values(allData).filter(r => r.booking?.slotId && !r.booking.cancelledAt).map(r => r.booking.slotId)
+    );
+    openSlots = {};
+    Object.values(allSlots).forEach(s => {
+      if (!s.open || bookedSlotIds.has(s.id)) return;
+      if (!openSlots[s.date]) openSlots[s.date] = [];
+      openSlots[s.date].push(s);
+    });
+  }
+
+  function renderCal() {
+    document.getElementById('cal-title').textContent = calY+'년 '+MONTHS[calM];
+    const g = document.getElementById('cal-grid'); g.innerHTML = '';
+    DOWS.forEach((d,i) => {
+      const el = document.createElement('div'); el.className = 'cal-dow';
+      el.style.color = i===0?'#E05050':i===6?'#4A90E2':'';
+      el.textContent = d; g.appendChild(el);
+    });
+    const firstDow = new Date(calY,calM,1).getDay();
+    const dim = new Date(calY,calM+1,0).getDate();
+    const today = new Date(); today.setHours(0,0,0,0);
+    for (let e=0; e<firstDow; e++) { const d=document.createElement('div'); g.appendChild(d); }
+    for (let d=1; d<=dim; d++) {
+      const dateObj = new Date(calY,calM,d);
+      const isPast = dateObj < today;
+      const isToday = dateObj.getTime()===today.getTime();
+      const dow = dateObj.getDay();
+      const dateKey = calY+'-'+String(calM+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+      const isAvail = !isPast && openSlots[dateKey] && openSlots[dateKey].length > 0;
+      const isSel = selDay === d;
+      const el = document.createElement('div'); el.className = 'cal-day'; el.textContent = d;
+      if (isSel) el.classList.add('sel');
+      else if (isPast||!isAvail) el.classList.add('off');
+      else { el.classList.add('avail'); if (dow===0) el.style.color='#E05050'; }
+      if (isToday && !isSel) el.classList.add('today');
+      if (isAvail && !isSel) {
+        const dot = document.createElement('span'); dot.className = 'avail-dot'; el.appendChild(dot);
+        el.onclick = () => pickDay(d, dateKey);
+      }
+      g.appendChild(el);
+    }
+  }
+
+  window.changeMonth = function(dir) {
+    calM += dir;
+    if (calM<0){calM=11;calY--;} if (calM>11){calM=0;calY++;}
+    selDay=null; selTime=null; selSlot=null;
+    renderCal();
+    document.getElementById('time-section').style.display = 'none';
+    document.getElementById('confirm-section').style.display = 'none';
+  };
+
+  function pickDay(d, dateKey) {
+    selDay=d; selTime=null; selSlot=null; renderCal();
+    document.getElementById('confirm-section').style.display = 'none';
+    const ts = document.getElementById('time-slots'); ts.innerHTML = '';
+    const daySlots = openSlots[dateKey] || [];
+    daySlots.sort((a,b)=>a.startTime.localeCompare(b.startTime)).forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'tslot';
+      el.textContent = fmtTime(s.startTime);
+      el.onclick = () => pickTime(s.startTime, s, el);
+      ts.appendChild(el);
+    });
+    document.getElementById('time-section').style.display = 'block';
+  }
+
+  function pickTime(label, slot, el) {
+    selTime = label; selSlot = slot;
+    document.querySelectorAll('.tslot').forEach(s => s.classList.remove('sel'));
+    el.classList.add('sel');
+    document.getElementById('conf-date').textContent = calY+'년 '+MONTHS[calM]+' '+selDay+'일';
+    document.getElementById('conf-time').textContent = fmtTime(label);
+    document.getElementById('confirm-section').style.display = 'block';
+  }
+
+  window.openConfirmModal = function() {
+    const dateStr = calY+'년 '+MONTHS[calM]+' '+selDay+'일';
+    document.getElementById('modal-info').innerHTML =
+      `<div style="color:#2E9E6B;font-weight:700;margin-bottom:4px">사무실 주소</div>
+       <div style="margin-bottom:10px">${STUDIO_ADDRESS}</div>
+       <div><span style="color:#888">신청일 : </span><strong>${dateStr}</strong></div>
+       <div><span style="color:#888">신청시간 : </span><strong>${fmtTime(selTime)}</strong></div>
+       <div><span style="color:#888">신청자 : </span><strong>${user.name}</strong></div>`;
+    document.getElementById('modal-overlay').style.display = 'flex';
+  };
+
+  window.closeModal = function() {
+    document.getElementById('modal-overlay').style.display = 'none';
+  };
+
+  window.confirmBook = async function() {
+    closeModal();
+    const dateStr = calY+'년 '+MONTHS[calM]+' '+selDay+'일';
+    showLoading(true);
+    try {
+      const allData = await getAllSubmissions();
+      const key = userKey(user);
+      const prev = allData[key];
+      const prevHistory = prev?.booking?.cancelHistory || [];
+      const rec = {...prev, status:'booked', booking:{
+        date:dateStr, time:selTime, slotId:selSlot?.id||null, cancelHistory:prevHistory
+      }};
+      await saveSubmission(key, rec);
+      if (selSlot?.id) {
+        const slotsData = await getAllSlots();
+        if (slotsData[selSlot.id]) await saveSlot(selSlot.id, {...slotsData[selSlot.id], open:false});
+      }
+      document.getElementById('done-info').innerHTML =
+        `<div style="margin-bottom:2px"><span style="color:#888">신청자 : </span><strong>${rec.cohort} ${rec.name}</strong></div>
+         <div style="margin-bottom:2px"><span style="color:#888">촬영 날짜 : </span><strong>${rec.booking.date}</strong></div>
+         <div style="margin-bottom:14px"><span style="color:#888">촬영 시간 : </span><strong>${fmtTime(rec.booking.time)}</strong></div>
+         <div style="color:#2E9E6B;font-weight:700;margin-bottom:4px">사무실 주소</div>
+         <div style="margin-bottom:12px">${STUDIO_ADDRESS}</div>
+         <div style="color:#2E9E6B;font-weight:700;margin-bottom:4px">주차 안내</div>
+         <div>${PARKING_INFO}</div>`;
+      go('pg-done');
+    } finally { showLoading(false); }
+  };
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#F0F7F4;font-family:'Noto Sans KR',sans-serif;color:#1A2E26}
+:root{
+  --acc:#4CAF8A;--acc-dark:#2E9E6B;--acc-light:#E8F5EE;
+  --bg:#FFFFFF;--bg2:#F0F7F4;--bg3:#E4F0EB;
+  --t1:#1A2E26;--t2:#5A7A6A;--t3:#9AB5A8;
+  --bd:rgba(26,100,70,.1);--bd2:rgba(26,100,70,.18);
+  --red:#E05050;--blue:#4A90E2;--purple:#7B68EE;--orange:#E8A020;
+  --rad:10px;--rad-lg:14px;
+}
+.app{max-width:460px;margin:0 auto;min-height:100vh;background:var(--bg);box-shadow:0 0 40px rgba(76,175,138,.12)}
+
+/* HEADER */
+.hdr{background:linear-gradient(135deg,#2E9E6B 0%,#4CAF8A 100%);padding:28px 22px 22px;position:relative;overflow:hidden}
+.hdr::before{content:'';position:absolute;top:-50px;right:-50px;width:160px;height:160px;border-radius:50%;background:rgba(255,255,255,.12)}
+.hdr::after{content:'';position:absolute;bottom:-30px;right:30px;width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,.07)}
+.hdr-eyebrow{font-size:10px;letter-spacing:3px;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:6px}
+.hdr-title{font-size:22px;font-weight:700;color:#fff;line-height:1.3;position:relative}
+.hdr-title span{color:#CCEFDF}
+.hdr-sub{font-size:12px;color:rgba(255,255,255,.65);margin-top:5px;position:relative}
+
+/* FORM */
+.pad{padding:22px}
+.fg{margin-bottom:16px}
+.lbl{display:block;font-size:12px;font-weight:500;color:var(--t2);margin-bottom:6px}
+.req{color:var(--red)}
+.inp{width:100%;border:1px solid var(--bd2);border-radius:var(--rad);padding:11px 13px;font-size:14px;font-family:inherit;color:var(--t1);background:var(--bg);outline:none;transition:border-color .15s,box-shadow .15s}
+.inp:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(76,175,138,.12)}
+.inp::placeholder{color:var(--t3)}
+
+/* BUTTONS */
+.btn{width:100%;padding:14px;border:none;border-radius:var(--rad-lg);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .15s}
+.btn+.btn{margin-top:10px}
+.btn:active{transform:scale(.98);opacity:.9}
+.btn-acc{background:linear-gradient(135deg,#2E9E6B,#4CAF8A);color:#fff}
+.btn-acc:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.btn-out{background:transparent;color:var(--t2);border:1px solid var(--bd2)}
+
+/* STATUS */
+.status-box{background:var(--bg2);border-radius:var(--rad-lg);padding:16px;margin-bottom:16px;border:1px solid var(--bd)}
+.admin-note{margin-top:10px;font-size:13px;background:var(--bg);border-radius:8px;padding:11px 13px;border-left:3px solid var(--acc);color:var(--t1);line-height:1.6}
+.admin-note-label{font-size:11px;color:var(--acc-dark);font-weight:700;margin-bottom:3px}
+.done-box{background:var(--acc-light);border:1px solid rgba(76,175,138,.25);border-radius:var(--rad-lg);padding:16px;margin-bottom:4px}
+.done-box-title{font-size:12px;color:var(--acc-dark);font-weight:700;margin-bottom:8px}
+.done-box-body{font-size:13px;color:var(--t1);line-height:1.9}
+
+/* NOTION GUIDE */
+.notice{background:#FFFBF0;border:1px solid rgba(232,160,32,.3);border-radius:var(--rad);padding:12px 14px;font-size:12px;color:#856404;line-height:1.6;margin-bottom:16px}
+.notion-guide{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad-lg);padding:14px;margin-top:8px}
+.notion-guide-title{font-size:12px;font-weight:700;color:var(--t2);margin-bottom:8px}
+.notion-step{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--t2);line-height:1.5;margin-bottom:5px}
+.notion-step-n{width:18px;height:18px;border-radius:50%;background:var(--acc-dark);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.link-check{display:flex;align-items:center;gap:8px;margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:var(--rad);border:1px solid var(--bd)}
+.link-check-btn{flex-shrink:0;padding:6px 12px;background:var(--acc-dark);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer}
+.link-check-status{font-size:12px;color:var(--t3);flex:1}
+.link-check-status.ok{color:var(--acc-dark);font-weight:600}
+.secret-tip{font-size:11px;color:var(--t3);margin-top:4px;line-height:1.5}
+.confirm-check-wrap{display:none;align-items:flex-start;gap:10px;margin-top:12px;padding:11px 13px;background:var(--bg);border:1px solid var(--bd2);border-radius:var(--rad);cursor:pointer}
+
+/* INFO ROW */
+.info-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:5px 0;border-bottom:1px solid var(--bd)}
+.info-row:last-child{border-bottom:none}
+.info-k{color:var(--t2)}
+.info-v{font-weight:500;color:var(--t1)}
+
+/* CALENDAR */
+.cal-nav-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.cal-title-txt{font-size:15px;font-weight:700;color:var(--t1)}
+.cal-nav-btn{width:32px;height:32px;border:1px solid var(--bd2);border-radius:var(--rad);background:var(--bg);cursor:pointer;font-size:18px;color:var(--t2);display:flex;align-items:center;justify-content:center}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cal-dow{text-align:center;font-size:11px;font-weight:500;padding:6px 0;color:var(--t3)}
+.cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:8px;font-size:13px;position:relative;cursor:default}
+.cal-day.avail{color:var(--t1);font-weight:600;cursor:pointer}
+.cal-day.avail:hover{background:var(--bg2)}
+.cal-day.sel{background:var(--acc)!important;color:#fff!important;font-weight:700}
+.cal-day.off{color:var(--t3);opacity:.35}
+.cal-day.today:not(.sel){background:var(--bg2);font-weight:600}
+.avail-dot{position:absolute;bottom:3px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--acc)}
+.time-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:14px}
+.tslot{border:1px solid var(--bd2);border-radius:var(--rad);padding:11px;text-align:center;font-size:13px;font-weight:500;cursor:pointer;transition:all .12s;background:var(--bg);color:var(--t1)}
+.tslot:hover{border-color:var(--acc);color:var(--acc-dark)}
+.tslot.sel{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:700}
+.legend{display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--t3)}
+.legend-item{display:flex;align-items:center;gap:4px}
+.legend-dot{width:6px;height:6px;border-radius:50%}
+.confirm-box{background:var(--acc-light);border:1px solid rgba(76,175,138,.25);border-radius:var(--rad-lg);padding:15px;margin-top:16px}
+.confirm-box-title{font-size:12px;color:var(--acc-dark);font-weight:700;margin-bottom:10px}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
+.modal-box{background:#fff;border-radius:16px;width:100%;max-width:360px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.modal-btns{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--bd)}
+.modal-btn-no{padding:16px;border:none;background:transparent;font-size:15px;font-weight:600;color:var(--t2);cursor:pointer;font-family:inherit;border-right:1px solid var(--bd)}
+.modal-btn-yes{padding:16px;border:none;background:var(--acc-dark);font-size:15px;font-weight:700;color:#fff;cursor:pointer;font-family:inherit}
+
+/* DONE */
+.done-wrap{padding:40px 22px;text-align:center}
+.done-icon{width:64px;height:64px;background:var(--acc-light);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:28px;color:var(--acc-dark)}
+
+/* LOADING */
+.loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.75);z-index:300;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px}
+.spinner{width:36px;height:36px;border:3px solid var(--bg3);border-top-color:var(--acc);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* MISC */
+.err-msg{font-size:12px;color:var(--red);margin-top:6px;display:none}
+.back-btn{background:none;border:none;color:var(--t2);font-size:13px;cursor:pointer;padding:0 0 16px;font-family:inherit;display:flex;align-items:center;gap:4px}
+.page{display:none}.page.on{display:block}
+.section-title{font-size:16px;font-weight:700;color:var(--t1);margin-bottom:4px}
+.section-desc{font-size:13px;color:var(--t2);line-height:1.7;margin-bottom:20px}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- LOADING -->
+<div class="loading-overlay" id="loading-overlay">
+  <div class="spinner"></div>
+  <div style="font-size:13px;color:var(--t2)">잠시만요...</div>
+</div>
+
+<!-- ENTRY -->
+<div class="page on" id="pg-entry">
+  <div class="hdr">
+    <div class="hdr-eyebrow">촬영 예약 시스템</div>
+    <div class="hdr-title">대본 제출 &amp; <span>촬영 예약</span></div>
+    <div class="hdr-sub">검수 완료 후 촬영 일정을 예약할 수 있어요</div>
+  </div>
+  <div class="pad">
+    <div style="background:var(--bg2);border-radius:var(--rad-lg);padding:16px;margin-bottom:24px;font-size:13px;color:var(--t2);line-height:1.9;border:1px solid var(--bd)">
+      <strong style="color:var(--t1);display:block;margin-bottom:4px">진행 순서</strong>
+      ① 기수 · 이름 · 전화번호로 본인 확인<br>
+      ② 노션 대본 링크 제출<br>
+      ③ 검수 완료 알림 후 촬영 일정 선택
+    </div>
+    <button class="btn btn-acc" onclick="go('pg-ident')">수강생 예약 시작 →</button>
+  </div>
+</div>
+
+<!-- IDENT -->
+<div class="page" id="pg-ident">
+  <div class="hdr">
+    <div class="hdr-eyebrow">촬영 예약 시스템</div>
+    <div class="hdr-title">본인 확인</div>
+    <div class="hdr-sub">기수 · 이름 · 전화번호를 입력해 주세요</div>
+  </div>
+  <div class="pad">
+    <button class="back-btn" onclick="go('pg-entry')">← 돌아가기</button>
+    <div class="fg"><label class="lbl">기수 <span class="req">*</span></label><input class="inp" id="u-cohort" placeholder="예: 3기"></div>
+    <div class="fg"><label class="lbl">이름 <span class="req">*</span></label><input class="inp" id="u-name" placeholder="홍길동"></div>
+    <div class="fg"><label class="lbl">전화번호 <span class="req">*</span></label><input class="inp" id="u-phone" placeholder="010-0000-0000" onkeydown="if(event.key==='Enter')identSubmit()"></div>
+    <div class="err-msg" id="ident-err"></div>
+    <button class="btn btn-acc" onclick="identSubmit()">확인하기 →</button>
+  </div>
+</div>
+
+<!-- STATUS -->
+<div class="page" id="pg-status">
+  <div class="hdr">
+    <div class="hdr-eyebrow">촬영 예약 시스템</div>
+    <div class="hdr-title" id="status-name">상태 확인</div>
+    <div class="hdr-sub" id="status-phone"></div>
+  </div>
+  <div class="pad">
+    <div class="status-box">
+      <div style="font-size:11px;color:var(--t2);margin-bottom:8px;font-weight:500">현재 상태</div>
+      <div id="status-badge"></div>
+      <div id="status-note"></div>
+      <div id="status-date" style="font-size:11px;color:var(--t3);margin-top:8px"></div>
+    </div>
+    <div id="status-action"></div>
+    <button class="btn btn-out" style="margin-top:8px" onclick="refreshStatus()">🔄 상태 새로고침</button>
+    <button class="btn btn-out" style="margin-top:8px;color:var(--t3);font-size:13px" onclick="go('pg-entry')">← 처음으로</button>
+  </div>
+</div>
+
+<!-- SCRIPTS -->
+<div class="page" id="pg-scripts">
+  <div class="hdr">
+    <div class="hdr-eyebrow">촬영 예약 시스템</div>
+    <div class="hdr-title">대본 제출</div>
+    <div class="hdr-sub" id="scripts-sub"></div>
+  </div>
+  <div class="pad">
+    <button class="back-btn" onclick="go('pg-ident')">← 수정하기</button>
+    <div class="notice">
+      📋 노션 페이지에 대본 3개를 모두 정리한 뒤, <strong>공개 설정</strong>하고 링크를 붙여넣어 주세요.<br><br>
+      노션 → 공유 → <strong>"링크 있는 모든 사용자"</strong> 또는 <strong>"웹에 게시"</strong>
+    </div>
+    <div class="fg">
+      <label class="lbl">노션 대본 링크 <span class="req">*</span></label>
+      <input class="inp" type="url" id="notion-link" placeholder="https://notion.so/..." oninput="checkNotionLink()">
+      <div class="notion-guide" id="notion-guide" style="display:none">
+        <div class="notion-guide-title">📋 노션 공유 설정 방법</div>
+        <div class="notion-step"><div class="notion-step-n">1</div><span>노션 페이지 우측 상단 <strong>공유</strong> 클릭</span></div>
+        <div class="notion-step"><div class="notion-step-n">2</div><span><strong>"링크 있는 모든 사용자"</strong> 또는 <strong>"웹에 게시"</strong> 선택</span></div>
+        <div class="notion-step"><div class="notion-step-n">3</div><span>아래 버튼으로 링크가 잘 열리는지 확인</span></div>
+        <div class="link-check">
+          <div style="flex:1">
+            <span class="link-check-status" id="notion-link-status">링크를 입력하면 열기 버튼이 나타납니다</span>
+            <div id="secret-tip" style="display:none" class="secret-tip">
+              💡 본인 계정으로 로그인된 상태라 비공개여도 보일 수 있어요.<br>
+              <strong style="color:var(--t2)">시크릿 창(Ctrl+Shift+N)</strong>에서 열어서 확인해 주세요!
+            </div>
+          </div>
+          <button class="link-check-btn" id="notion-link-btn" style="display:none" onclick="openNotionLink()">링크 열기 →</button>
+        </div>
+        <label id="confirm-check-wrap" class="confirm-check-wrap">
+          <input type="checkbox" id="public-confirm" style="margin-top:2px;accent-color:var(--acc);width:16px;height:16px;flex-shrink:0" onchange="onConfirmCheck()">
+          <span style="font-size:13px;color:var(--t1);line-height:1.5">시크릿 창에서 확인했어요. 로그인 없이도 페이지가 잘 열립니다. ✓</span>
+        </label>
+      </div>
+    </div>
+    <div class="err-msg" id="scripts-err"></div>
+    <button class="btn btn-acc" id="submit-btn" disabled onclick="submitScripts()" style="opacity:.4;cursor:not-allowed">대본 제출하기 →</button>
+  </div>
+</div>
+
+<!-- CALENDAR -->
+<div class="page" id="pg-calendar">
+  <div class="hdr">
+    <div class="hdr-eyebrow">촬영 예약 시스템</div>
+    <div class="hdr-title">촬영 일정 선택</div>
+    <div class="hdr-sub">예약 가능 날짜(●)를 선택하세요</div>
+  </div>
+  <div class="pad">
+    <button class="back-btn" onclick="go('pg-status')">← 상태 페이지로</button>
+    <div class="cal-nav-row">
+      <button class="cal-nav-btn" onclick="changeMonth(-1)">‹</button>
+      <span class="cal-title-txt" id="cal-title"></span>
+      <button class="cal-nav-btn" onclick="changeMonth(1)">›</button>
+    </div>
+    <div class="cal-grid" id="cal-grid"></div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--acc)"></div>예약 가능</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--bg3)"></div>마감/불가</div>
+    </div>
+    <div id="time-section" style="display:none;margin-top:20px">
+      <div style="font-size:13px;font-weight:600;color:var(--t1);margin-bottom:8px">시간대 선택</div>
+      <div class="time-grid" id="time-slots"></div>
+    </div>
+    <div id="confirm-section" style="display:none">
+      <div class="confirm-box">
+        <div class="confirm-box-title">예약 확인</div>
+        <div class="info-row"><span class="info-k">촬영일</span><span class="info-v" id="conf-date"></span></div>
+        <div class="info-row"><span class="info-k">시간</span><span class="info-v" id="conf-time"></span></div>
+      </div>
+      <button class="btn btn-acc" style="margin-top:12px" onclick="openConfirmModal()">예약 신청하기 →</button>
+    </div>
+    <button class="btn btn-out" style="margin-top:10px" onclick="go('pg-status')">뒤로</button>
+  </div>
+</div>
+
+<!-- DONE -->
+<div class="page" id="pg-done">
+  <div class="done-wrap">
+    <div class="done-icon">✓</div>
+    <div style="font-size:20px;font-weight:700;color:var(--t1);margin-bottom:6px">촬영 신청이 완료되었습니다!</div>
+    <div style="font-size:13px;color:var(--t2);margin-bottom:24px;line-height:1.6">신청한 내역은 변경이 불가합니다.</div>
+    <div id="done-info" style="background:var(--bg2);border-radius:var(--rad-lg);padding:18px;text-align:left;margin-bottom:16px;font-size:13px;line-height:2;border:1px solid var(--bd)"></div>
+    <button class="btn btn-out" onclick="go('pg-entry')">돌아가기</button>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal-box">
+    <div style="padding:24px 22px 0;text-align:center">
+      <div style="font-size:17px;font-weight:700;color:var(--t1);margin-bottom:16px">촬영 신청 확인</div>
+      <div id="modal-info" style="background:var(--bg2);border-radius:var(--rad-lg);padding:14px;text-align:left;font-size:13px;line-height:1.9;margin-bottom:14px;border:1px solid var(--bd)"></div>
+      <div style="font-size:13px;color:var(--red);line-height:1.7;margin-bottom:20px;font-weight:500">
+        다른 촬영이 잡혀있어 일정변경은 어렵습니다.<br>한번 신청한 내역은 변경이 불가합니다.<br>최종 결정하시겠습니까?
+      </div>
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn-no" onclick="closeModal()">아니오</button>
+      <button class="modal-btn-yes" onclick="confirmBook()">예</button>
+    </div>
+  </div>
+</div>
+
+</div>
+<script>function go(id){document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));document.getElementById(id).classList.add('on');window.scrollTo(0,0);}</script>
+</body>
+</html>

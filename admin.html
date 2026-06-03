@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>관리자 · 촬영 예약</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<meta name="robots" content="noindex,nofollow">
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+  import { getFirestore, doc, getDoc, setDoc, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+
+  // ── Firebase 설정 (직접 채워넣으세요) ──────────────
+  const firebaseConfig = {
+    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
+    authDomain: "unicorn-booking-39da6.firebaseapp.com",
+    projectId: "unicorn-booking-39da6",
+    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
+    messagingSenderId: "321266129675",
+    appId: "1:321266129675:web:5a285877a7498f477a600e"
+  };
+
+  const ADMIN_PASS = 'dbslzhs157600@@'; // ← 비밀번호 변경하세요
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const STORE_COL = 'submissions';
+  const SLOTS_COL = 'slots';
+  const DOW_LABELS = ['일','월','화','수','목','금','토'];
+
+  const STATUSES = {
+    submitted:{label:'제출 완료', icon:'📤',color:'#2E9E6B',bg:'rgba(46,158,107,.12)',border:'rgba(46,158,107,.25)'},
+    reviewing:{label:'검수 중',   icon:'🔍',color:'#E8A020',bg:'rgba(232,160,32,.12)',border:'rgba(232,160,32,.25)'},
+    revision: {label:'재작성 필요',icon:'✏️',color:'#E05050',bg:'rgba(224,80,80,.12)',border:'rgba(224,80,80,.25)'},
+    approved: {label:'예약 가능', icon:'✅',color:'#2E9E6B',bg:'rgba(46,158,107,.12)',border:'rgba(46,158,107,.25)'},
+    booked:   {label:'예약 완료', icon:'🎬',color:'#7B68EE',bg:'rgba(123,104,238,.12)',border:'rgba(123,104,238,.25)'},
+    completed:{label:'촬영 완료', icon:'🎥',color:'#1ABC9C',bg:'rgba(26,188,156,.12)',border:'rgba(26,188,156,.25)'},
+  };
+
+  let allData={}, slots={};
+  let adminFilter='all', slotFilter='all', bookingFilter='all';
+  let detailKey=null, bookingDetailKey=null;
+  let currentSubTab='slots';
+
+  // ── FIRESTORE HELPERS ──
+  async function getAllSubmissions(){
+    const snap=await getDocs(collection(db,STORE_COL));
+    const r={}; snap.forEach(d=>r[d.id]=d.data()); return r;
+  }
+  async function saveSubmission(key,data){ await setDoc(doc(db,STORE_COL,key),data); }
+  async function getAllSlots(){
+    const snap=await getDocs(collection(db,SLOTS_COL));
+    const r={}; snap.forEach(d=>r[d.id]=d.data()); return r;
+  }
+  async function saveSlot(id,data){ await setDoc(doc(db,SLOTS_COL,id),data); }
+  async function deleteSlotDoc(id){ await deleteDoc(doc(db,SLOTS_COL,id)); }
+
+  // ── AUTO COMPLETE ──
+  async function autoComplete(data){
+    const now=new Date();
+    for(const rec of Object.values(data)){
+      if(rec.status==='booked'&&rec.booking&&!rec.booking.cancelledAt){
+        const [y,m,d]=rec.booking.date.replace(/[년월일 ]/g,'-').split('-').filter(Boolean).map(Number);
+        const [h,min]=rec.booking.time.split(':').map(Number);
+        if(now>new Date(y,m-1,d,h,min,0)){
+          const updated={...rec,status:'completed'};
+          await saveSubmission(rec.key,updated);
+          data[rec.key]=updated;
+        }
+      }
+    }
+    return data;
+  }
+
+  // ── UTILS ──
+  function fmtTime(t){
+    if(!t)return t;
+    const [h,m]=t.split(':').map(Number);
+    const ampm=h<12?'오전':'오후';
+    const h12=h===0?12:h>12?h-12:h;
+    return `${ampm} ${String(h12).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  }
+  function badge(s){
+    const st=STATUSES[s]||{label:s,icon:'',color:'#888',bg:'rgba(128,128,128,.1)'};
+    return `<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${st.color};background:${st.bg}">${st.icon} ${st.label}</span>`;
+  }
+  function showLoading(show){ document.getElementById('loading-overlay').style.display=show?'flex':'none'; }
+  function showToast(msg,color){
+    const t=document.getElementById('toast');
+    t.textContent=msg; t.style.background=color||'#2E9E6B';
+    t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2400);
+  }
+
+  // ── NAV ──
+  window.go=function(id){
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
+    document.getElementById(id).classList.add('on');
+    window.scrollTo(0,0);
+  };
+
+  // ── TABS ──
+  window.switchTab=function(tab){
+    document.getElementById('tab-dash').classList.toggle('on',tab==='dash');
+    document.getElementById('tab-schedule').classList.toggle('on',tab==='schedule');
+    if(tab==='dash'){loadDash();go('pg-dash');}
+    else{loadSchedule();go('pg-schedule');}
+  };
+
+  window.switchSubTab=function(sub){
+    currentSubTab=sub;
+    document.getElementById('sub-slots').classList.toggle('on',sub==='slots');
+    document.getElementById('sub-bookings').classList.toggle('on',sub==='bookings');
+    document.getElementById('sub-slots-content').style.display=sub==='slots'?'block':'none';
+    document.getElementById('sub-bookings-content').style.display=sub==='bookings'?'block':'none';
+    if(sub==='slots') loadSchedule();
+    else loadBookings();
+  };
+
+  // ── LOGIN ──
+  window.doLogin=async function(){
+    const pw=document.getElementById('admin-pw').value;
+    if(pw===ADMIN_PASS){
+      document.getElementById('login-err').style.display='none';
+      document.getElementById('tab-bar').style.display='flex';
+      initSelects();
+      buildDowChecks();
+      await loadDash();
+      go('pg-dash');
+    } else {
+      document.getElementById('login-err').style.display='block';
+    }
+  };
+
+  // ── 대본 관리 ──
+  async function loadDash(){
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      allData=await autoComplete(allData);
+      const list=Object.values(allData);
+      document.getElementById('dash-sub').textContent=`총 ${list.length}건 제출`;
+      const sg=document.getElementById('dash-stats');
+      sg.innerHTML=Object.entries(STATUSES).map(([k,v])=>{
+        const cnt=list.filter(r=>r.status===k).length;
+        return `<div class="stat-card" style="background:${v.bg};border-color:${v.border}">
+          <div class="stat-num" style="color:${v.color}">${cnt}</div>
+          <div class="stat-label" style="color:${v.color}">${v.icon} ${v.label}</div>
+        </div>`;
+      }).join('');
+      const opts=[['all',`전체 (${list.length})`],...Object.entries(STATUSES).map(([k,v])=>[k,`${v.icon} ${v.label}`])];
+      document.getElementById('dash-filters').innerHTML=opts.map(([k,l])=>
+        `<button class="ftag${adminFilter===k?' on':''}" onclick="setDashFilter('${k}')">${l}</button>`).join('');
+      renderDashList();
+    }finally{showLoading(false);}
+  }
+
+  window.setDashFilter=function(f){adminFilter=f;renderDashList();
+    document.querySelectorAll('#dash-filters .ftag').forEach(b=>b.classList.toggle('on',b.textContent.includes(STATUSES[f]?.label)||f==='all'&&b.textContent.includes('전체')));
+  };
+
+  function renderDashList(){
+    const el=document.getElementById('dash-list');
+    const list=Object.values(allData).filter(r=>adminFilter==='all'||r.status===adminFilter)
+      .sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt));
+    if(!list.length){el.innerHTML=`<div class="empty">해당 상태의 제출 내역이 없습니다.</div>`;return;}
+    el.innerHTML=list.map(r=>`
+      <div class="rec-card" onclick="openDetail('${r.key}')">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div class="rec-name">${r.cohort} ${r.name}</div>
+            <div class="rec-meta">${r.phone}</div>
+            <div class="rec-date">제출: ${new Date(r.submittedAt).toLocaleDateString('ko-KR')}</div>
+          </div>
+          ${badge(r.status)}
+        </div>
+      </div>`).join('');
+  }
+
+  window.openDetail=async function(key){
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      const rec=allData[key]; if(!rec)return;
+      detailKey=key;
+      document.getElementById('detail-title').textContent=`${rec.cohort} ${rec.name}`;
+      document.getElementById('detail-sub').textContent=rec.phone;
+      document.getElementById('detail-info').innerHTML=
+        [['기수',rec.cohort],['이름',rec.name],['전화번호',rec.phone],
+         ['제출일',new Date(rec.submittedAt).toLocaleDateString('ko-KR')],
+         ['현재 상태',badge(rec.status)]
+        ].map(([k,v])=>`<div class="info-row"><span class="info-k">${k}</span><span class="info-v">${v}</span></div>`).join('');
+      document.getElementById('detail-scripts').innerHTML=`
+        <div class="notion-link-card">
+          <div class="notion-link-hd"><span style="font-size:13px;font-weight:600;color:var(--t1)">📄 노션 대본 링크</span></div>
+          <div class="notion-link-bd">
+            <div class="link-row">
+              <span class="link-text">${rec.notionLink||'링크 없음'}</span>
+              ${rec.notionLink?`<button class="open-btn-s" onclick="window.open(decodeURIComponent('${encodeURIComponent(rec.notionLink)}'),'_blank')">열기 →</button>`:''}
+            </div>
+          </div>
+        </div>`;
+      document.getElementById('detail-note').value=rec.adminNote||'';
+      document.getElementById('detail-status-btns').innerHTML=Object.entries(STATUSES).map(([k,v])=>`
+        <button class="s-btn${rec.status===k?' on':''}"
+          style="${rec.status===k?`border-color:${v.color};background:${v.bg};color:${v.color}`:''}"
+          onclick="changeStatus('${k}')">${v.icon} ${v.label}</button>`).join('');
+      go('pg-detail');
+    }finally{showLoading(false);}
+  };
+
+  window.changeStatus=async function(status){
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      const note=document.getElementById('detail-note').value;
+      const updated={...allData[detailKey],status,adminNote:note};
+      await saveSubmission(detailKey,updated);
+      showToast('✓ 상태가 변경되었습니다');
+      await openDetail(detailKey);
+    }finally{showLoading(false);}
+  };
+
+  // ── 슬롯 관리 ──
+  async function loadSchedule(){
+    showLoading(true);
+    try{
+      slots=await getAllSlots();
+      allData=await getAllSubmissions();
+
+      // 활성 예약 있는 슬롯 자동 마감
+      const activeBookedSlotIds=new Set(
+        Object.values(allData).filter(r=>r.booking?.slotId&&!r.booking.cancelledAt).map(r=>r.booking.slotId)
+      );
+      for(const id of activeBookedSlotIds){
+        if(slots[id]&&slots[id].open){ slots[id].open=false; await saveSlot(id,slots[id]); }
+      }
+
+      const list=Object.values(slots).sort((a,b)=>a.datetime.localeCompare(b.datetime));
+      const open=list.filter(s=>s.open).length;
+      const closed=list.filter(s=>!s.open).length;
+      document.getElementById('schedule-sub').textContent=`슬롯 ${list.length}개 · 오픈 ${open} · 마감 ${closed}`;
+
+      const filterDefs=[{k:'all',label:`전체 (${list.length})`},{k:'open',label:`오픈 (${open})`},{k:'closed',label:`마감 (${closed})`}];
+      document.getElementById('slot-filters').innerHTML=filterDefs
+        .map(f=>`<button class="ftag${slotFilter===f.k?' on':''}" onclick="setSlotFilter('${f.k}')">${f.label}</button>`).join('');
+
+      const filtered=list.filter(s=>slotFilter==='all'||(slotFilter==='open'&&s.open)||(slotFilter==='closed'&&!s.open));
+      const el=document.getElementById('slot-list');
+      if(!filtered.length){el.innerHTML=`<div class="empty">슬롯이 없습니다.</div>`;return;}
+
+      const grouped={};
+      filtered.forEach(s=>{if(!grouped[s.date])grouped[s.date]=[];grouped[s.date].push(s);});
+
+      el.innerHTML=Object.entries(grouped).map(([date,arr])=>{
+        const d=new Date(date+'T00:00:00');
+        const label=d.toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'});
+        return `<div class="slot-date-group">
+          <div class="slot-date-label">📆 ${label}</div>
+          ${arr.map(s=>`
+            <div class="slot-card${s.open?'':' closed'}">
+              <div style="flex:1">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="slot-time">${fmtTime(s.startTime)}</span>
+                  <span class="slot-status-pill ${s.open?'open':'closed'}">${s.open?'오픈':'마감'}</span>
+                </div>
+              </div>
+              <div class="slot-actions">
+                ${s.open
+                  ?`<button class="slot-btn close-btn-s" data-id="${s.id}" data-action="close">마감</button>`
+                  :`<button class="slot-btn open-btn-s2" data-id="${s.id}" data-action="open">오픈</button>`}
+                <button class="slot-btn del-btn-s" data-id="${s.id}" data-action="del">삭제</button>
+              </div>
+            </div>`).join('')}
+        </div>`;
+      }).join('');
+    }finally{showLoading(false);}
+  }
+
+  window.setSlotFilter=function(f){slotFilter=f;loadSchedule();};
+
+  document.addEventListener('click',async e=>{
+    const btn=e.target.closest('[data-action]');
+    if(!btn)return;
+    const id=btn.dataset.id, action=btn.dataset.action;
+    if(action==='open'||action==='close'){
+      slots=await getAllSlots();
+      if(!slots[id])return;
+      slots[id].open=(action==='open');
+      await saveSlot(id,slots[id]);
+      showToast(action==='open'?'✓ 오픈됐습니다':'⛔ 마감됐습니다',action==='open'?'#2E9E6B':'#E05050');
+      loadSchedule();
+    }
+    if(action==='del'){
+      allData=await getAllSubmissions();
+      const isBooked=Object.values(allData).some(r=>r.booking?.slotId===id&&!r.booking.cancelledAt);
+      if(isBooked){showToast('⚠️ 예약된 슬롯은 삭제할 수 없습니다','#E8A020');return;}
+      await deleteSlotDoc(id);
+      showToast('🗑 삭제됐습니다','#E8A020');
+      loadSchedule();
+    }
+  });
+
+  // ── 슬롯 추가 ──
+  function initSelects(){
+    const selH=document.getElementById('sel-h');
+    if(selH&&!selH.options.length){
+      for(let h=1;h<=12;h++){const o=document.createElement('option');o.value=h;o.textContent=String(h).padStart(2,'0');selH.appendChild(o);}
+      selH.value=9;
+    }
+    const selM=document.getElementById('sel-m');
+    if(selM&&!selM.options.length){
+      for(let m=0;m<60;m++){const o=document.createElement('option');o.value=m;o.textContent=String(m).padStart(2,'0');selM.appendChild(o);}
+      selM.value=0;
+    }
+    syncTimeInput();
+  }
+
+  window.syncTimeInput=function(){
+    const ampm=document.getElementById('sel-ampm').value;
+    let h=parseInt(document.getElementById('sel-h').value);
+    const m=parseInt(document.getElementById('sel-m').value);
+    if(ampm==='AM'){if(h===12)h=0;}else{if(h!==12)h+=12;}
+    document.getElementById('slot-start').value=`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+  };
+
+  function buildDowChecks(){
+    const el=document.getElementById('dow-checks');
+    if(!el)return;
+    el.innerHTML=DOW_LABELS.map((d,i)=>`
+      <div class="dow-check${i>=1&&i<=5?' on':''}" id="dow-${i}" onclick="toggleDow(${i})">${d}</div>`).join('');
+  }
+  window.toggleDow=function(i){document.getElementById(`dow-${i}`).classList.toggle('on');};
+
+  window.addSlot=async function(){
+    const errEl=document.getElementById('slot-err');
+    const from=document.getElementById('slot-date-from').value;
+    const to=document.getElementById('slot-date-to').value;
+    const startStr=document.getElementById('slot-start').value;
+    if(!from||!to){errEl.textContent='날짜를 입력해 주세요.';errEl.style.display='block';return;}
+    if(from>to){errEl.textContent='종료 날짜는 시작 날짜 이후여야 합니다.';errEl.style.display='block';return;}
+    if(!startStr){errEl.textContent='시간을 입력해 주세요.';errEl.style.display='block';return;}
+    const activeDows=new Set([0,1,2,3,4,5,6].filter(i=>document.getElementById(`dow-${i}`)?.classList.contains('on')));
+    if(!activeDows.size){errEl.textContent='요일을 하나 이상 선택해 주세요.';errEl.style.display='block';return;}
+    const parseLocal=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d);};
+    const dates=[];
+    let cur=parseLocal(from);
+    const end=parseLocal(to);
+    while(cur<=end){
+      if(activeDows.has(cur.getDay())){
+        const y=cur.getFullYear(),m=String(cur.getMonth()+1).padStart(2,'0'),d=String(cur.getDate()).padStart(2,'0');
+        dates.push(`${y}-${m}-${d}`);
+      }
+      cur.setDate(cur.getDate()+1);
+    }
+    if(!dates.length){errEl.textContent='선택한 기간 내 해당 요일이 없습니다.';errEl.style.display='block';return;}
+    errEl.style.display='none';
+    showLoading(true);
+    try{
+      for(const date of dates){
+        const id='slot_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+        await saveSlot(id,{id,date,startTime:startStr,open:true,datetime:date+'T'+startStr});
+      }
+      showToast(`✓ ${dates.length}개 슬롯 추가됐습니다`);
+      loadSchedule();
+    }finally{showLoading(false);}
+  };
+
+  // ── 예약 내역 ──
+  async function loadBookings(){
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      allData=await autoComplete(allData);
+      const withBooking=Object.values(allData).filter(r=>r.booking);
+      const active=withBooking.filter(r=>!r.booking.cancelledAt).length;
+      const cancelled=withBooking.filter(r=>r.booking.cancelledAt).length;
+      const filterDefs=[
+        {k:'all',label:`전체 (${withBooking.length})`},
+        {k:'active',label:`예약 중 (${active})`},
+        {k:'cancelled',label:`취소 포함 (${cancelled})`},
+      ];
+      document.getElementById('booking-filters').innerHTML=filterDefs
+        .map(f=>`<button class="ftag${bookingFilter===f.k?' on':''}" onclick="setBookingFilter('${f.k}')">${f.label}</button>`).join('');
+      const filtered=withBooking.filter(r=>
+        bookingFilter==='all'||(bookingFilter==='active'&&!r.booking.cancelledAt)||(bookingFilter==='cancelled'&&r.booking.cancelledAt)
+      ).sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt));
+      const el=document.getElementById('booking-list');
+      if(!filtered.length){el.innerHTML=`<div class="empty">예약 내역이 없습니다.</div>`;return;}
+      el.innerHTML=filtered.map(r=>{
+        const isCancelled=!!r.booking.cancelledAt;
+        const histCount=(r.booking.cancelHistory||[]).length;
+        return `<div class="booking-card${isCancelled?' cancelled':''}" onclick="openBookingDetail('${r.key}')">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
+            <div>
+              <div class="rec-name">${r.cohort} ${r.name}</div>
+              <div class="rec-meta">${r.phone}</div>
+              <div class="rec-date${isCancelled?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
+              ${histCount>0?`<div style="font-size:11px;color:#E05050;margin-top:3px">취소 이력 ${histCount}건</div>`:''}
+            </div>
+            <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${isCancelled?'#999':'#7B68EE'};background:${isCancelled?'#f0f0f0':'rgba(123,104,238,.12)'}">
+              ${isCancelled?'취소됨':'예약 중'}
+            </span>
+          </div>
+        </div>`;
+      }).join('');
+    }finally{showLoading(false);}
+  }
+
+  window.setBookingFilter=function(f){bookingFilter=f;loadBookings();};
+
+  window.openBookingDetail=async function(key){
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      const rec=allData[key]; if(!rec||!rec.booking)return;
+      bookingDetailKey=key;
+      document.getElementById('bd-title').textContent=`${rec.cohort} ${rec.name}`;
+      document.getElementById('bd-sub').textContent=rec.phone;
+      const isCancelled=!!rec.booking.cancelledAt;
+      document.getElementById('bd-info').innerHTML=
+        [['기수',rec.cohort],['이름',rec.name],['전화번호',rec.phone],
+         ['예약일',rec.booking.date],['예약 시간',fmtTime(rec.booking.time)],
+         ['상태',isCancelled
+           ?`<span style="color:#999">취소됨 (${new Date(rec.booking.cancelledAt).toLocaleDateString('ko-KR')})</span>`
+           :`<span style="color:#7B68EE;font-weight:700">예약 중</span>`]
+        ].map(([k,v])=>`<div class="info-row"><span class="info-k">${k}</span><span class="info-v">${v}</span></div>`).join('');
+
+      document.getElementById('bd-booking-box').innerHTML=
+        `<div>📅 <strong${isCancelled?' style="text-decoration:line-through;color:#bbb"':''}>${rec.booking.date}</strong></div>
+         <div>⏰ <strong${isCancelled?' style="text-decoration:line-through;color:#bbb"':''}>${fmtTime(rec.booking.time)}</strong></div>
+         ${!isCancelled?'<div style="font-size:12px;color:#888;margin-top:6px">취소 시 해당 슬롯이 다시 오픈되며 기록은 유지됩니다.</div>':''}`;
+
+      document.getElementById('bd-cancel-form').style.display=isCancelled?'none':'block';
+      document.getElementById('bd-cancel-reason').value='';
+
+      const history=rec.booking.cancelHistory||[];
+      const histSection=document.getElementById('bd-history-section');
+      if(history.length>0){
+        histSection.style.display='block';
+        document.getElementById('bd-history-list').innerHTML=history.map((h,i)=>`
+          <div class="cancel-history-item">
+            <strong>#${i+1}</strong> &nbsp;
+            ${new Date(h.cancelledAt).toLocaleDateString('ko-KR')} ${new Date(h.cancelledAt).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}<br>
+            취소 예약: <span style="text-decoration:line-through">${h.date} ${fmtTime(h.time)}</span><br>
+            사유: ${h.cancelReason}
+          </div>`).join('');
+      } else { histSection.style.display='none'; }
+      go('pg-booking-detail');
+    }finally{showLoading(false);}
+  };
+
+  window.doCancel=async function(){
+    showLoading(true);
+    try{
+      allData=await getAllSubmissions();
+      const rec=allData[bookingDetailKey];
+      if(!rec||!rec.booking||rec.booking.cancelledAt)return;
+      const reason=document.getElementById('bd-cancel-reason').value.trim()||'(사유 없음)';
+      if(rec.booking.slotId){
+        const sData=await getAllSlots();
+        if(sData[rec.booking.slotId]) await saveSlot(rec.booking.slotId,{...sData[rec.booking.slotId],open:true});
+      }
+      const newEntry={cancelledAt:new Date().toISOString(),cancelReason:reason,date:rec.booking.date,time:rec.booking.time,slotId:rec.booking.slotId||null};
+      const history=[...(rec.booking.cancelHistory||[]),newEntry];
+      const updated={...rec,status:'approved',booking:{...rec.booking,cancelledAt:newEntry.cancelledAt,cancelReason:reason,cancelHistory:history}};
+      await saveSubmission(bookingDetailKey,updated);
+      showToast('✓ 예약이 취소됐습니다. 슬롯이 다시 오픈됩니다.','#E8A020');
+      await openBookingDetail(bookingDetailKey);
+    }finally{showLoading(false);}
+  };
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#F0F7F4;font-family:'Noto Sans KR',sans-serif;color:#1A2E26}
+:root{
+  --acc:#4CAF8A;--acc-dark:#2E9E6B;--acc-light:#E8F5EE;
+  --bg:#FFFFFF;--bg2:#F0F7F4;--bg3:#E4F0EB;
+  --t1:#1A2E26;--t2:#5A7A6A;--t3:#9AB5A8;
+  --bd:rgba(26,100,70,.1);--bd2:rgba(26,100,70,.18);
+  --red:#E05050;--blue:#4A90E2;--purple:#7B68EE;--orange:#E8A020;
+  --rad:10px;--rad-lg:14px;
+}
+.app{max-width:500px;margin:0 auto;min-height:100vh;background:var(--bg);box-shadow:0 0 40px rgba(76,175,138,.12);padding-bottom:80px}
+
+/* HEADER */
+.hdr{background:linear-gradient(135deg,#2E9E6B 0%,#4CAF8A 100%);padding:22px 22px 16px;position:relative;overflow:hidden}
+.hdr::before{content:'';position:absolute;top:-40px;right:-40px;width:120px;height:120px;border-radius:50%;background:rgba(255,255,255,.12)}
+.hdr-eyebrow{font-size:10px;letter-spacing:3px;color:rgba(255,255,255,.6);text-transform:uppercase;margin-bottom:4px}
+.hdr-title{font-size:19px;font-weight:700;color:#fff;position:relative}
+.hdr-title span{color:#CCEFDF}
+.hdr-sub{font-size:12px;color:rgba(255,255,255,.65);margin-top:3px}
+
+/* TAB BAR */
+.tab-bar{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:500px;background:#fff;border-top:1px solid var(--bd2);display:flex;z-index:100;box-shadow:0 -4px 20px rgba(76,175,138,.1)}
+.tab-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:10px 0 12px;cursor:pointer;font-size:11px;font-weight:500;color:var(--t3);gap:3px;transition:color .15s;border:none;background:none;font-family:inherit}
+.tab-item.on{color:var(--acc-dark)}
+.tab-icon{font-size:20px;line-height:1}
+
+/* SUB TAB */
+.sub-tab-row{display:flex;border-bottom:1px solid var(--bd);background:var(--bg2)}
+.sub-tab{flex:1;padding:11px 0;text-align:center;font-size:13px;font-weight:600;color:var(--t3);cursor:pointer;border:none;background:none;font-family:inherit;border-bottom:2px solid transparent;transition:all .15s}
+.sub-tab.on{color:var(--acc-dark);border-bottom-color:var(--acc-dark)}
+
+/* FORM */
+.fg{margin-bottom:14px}
+.lbl{display:block;font-size:12px;font-weight:500;color:var(--t2);margin-bottom:6px}
+.inp{width:100%;border:1px solid var(--bd2);border-radius:var(--rad);padding:11px 13px;font-size:14px;font-family:inherit;color:var(--t1);background:var(--bg);outline:none;transition:border-color .15s}
+.inp:focus{border-color:var(--acc)}
+.inp::placeholder{color:var(--t3)}
+textarea.inp{resize:vertical;min-height:72px;line-height:1.6}
+
+/* BUTTONS */
+.btn{width:100%;padding:13px;border:none;border-radius:var(--rad-lg);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:all .15s}
+.btn+.btn{margin-top:9px}
+.btn:active{transform:scale(.98);opacity:.88}
+.btn-acc{background:linear-gradient(135deg,#2E9E6B,#4CAF8A);color:#fff}
+.btn-out{background:transparent;color:var(--t2);border:1px solid var(--bd2)}
+.btn-green{background:#2E9E6B;color:#fff}
+
+/* STATS */
+.stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:16px}
+.stat-card{border-radius:var(--rad-lg);padding:12px 14px;border:1px solid transparent}
+.stat-num{font-size:24px;font-weight:700;line-height:1}
+.stat-label{font-size:11px;font-weight:700;margin-top:3px;opacity:.85}
+
+/* FILTERS */
+.filter-row{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:14px}
+.filter-row::-webkit-scrollbar{display:none}
+.ftag{flex-shrink:0;padding:5px 13px;border-radius:20px;border:1px solid var(--bd2);background:transparent;color:var(--t2);font-size:12px;font-weight:500;cursor:pointer;font-family:inherit;white-space:nowrap;transition:all .12s}
+.ftag.on{background:var(--acc-dark);color:#fff;border-color:var(--acc-dark)}
+
+/* CARDS */
+.rec-card{border:1px solid var(--bd2);border-radius:var(--rad-lg);padding:14px 16px;margin-bottom:10px;cursor:pointer;background:var(--bg);transition:background .12s}
+.rec-card:hover{background:var(--bg2)}
+.rec-name{font-size:15px;font-weight:700;color:var(--t1)}
+.rec-meta{font-size:12px;color:var(--t2);margin-top:2px}
+.rec-date{font-size:11px;color:var(--t3);margin-top:3px}
+.booking-card{border:1px solid var(--bd2);border-radius:var(--rad-lg);padding:14px 16px;margin-bottom:10px;cursor:pointer;background:var(--bg)}
+.booking-card.cancelled{opacity:.65;border-style:dashed}
+.cancelled-text{text-decoration:line-through}
+
+/* DETAIL */
+.detail-section{margin-bottom:16px}
+.detail-section-title{font-size:12px;font-weight:700;color:var(--t2);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+.info-box{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad-lg);padding:14px}
+.info-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:5px 0;border-bottom:1px solid var(--bd)}
+.info-row:last-child{border-bottom:none}
+.info-k{color:var(--t2)}
+.info-v{font-weight:500;color:var(--t1)}
+.notion-link-card{background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--rad-lg);overflow:hidden;margin-bottom:12px}
+.notion-link-hd{background:var(--bg3);padding:9px 14px}
+.notion-link-bd{padding:12px 14px}
+.link-row{display:flex;align-items:center;gap:8px}
+.link-text{font-size:12px;color:var(--blue);word-break:break-all;flex:1;line-height:1.4}
+.open-btn-s{flex-shrink:0;padding:6px 11px;background:var(--acc-dark);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer}
+.status-btn-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.s-btn{padding:10px 8px;border-radius:8px;border:1px solid var(--bd2);background:var(--bg);color:var(--t2);font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;font-family:inherit;transition:all .12s}
+.s-btn.on{border-width:2px}
+.back-btn{background:none;border:none;color:var(--t2);font-size:13px;cursor:pointer;padding:0 0 16px;font-family:inherit;display:flex;align-items:center;gap:4px}
+
+/* SLOT CARDS */
+.slot-date-group{margin-bottom:20px}
+.slot-date-label{font-size:13px;font-weight:700;color:var(--t1);margin-bottom:8px}
+.slot-card{border:1px solid var(--bd2);border-radius:var(--rad);padding:11px 14px;margin-bottom:8px;background:var(--bg);display:flex;align-items:center;justify-content:space-between;gap:10px}
+.slot-card.closed{opacity:.5;background:var(--bg2)}
+.slot-time{font-size:14px;font-weight:600;color:var(--t1)}
+.slot-actions{display:flex;gap:6px;flex-shrink:0}
+.slot-btn{padding:5px 11px;border-radius:8px;font-size:11px;font-weight:700;font-family:inherit;cursor:pointer;border:1px solid var(--bd2);background:var(--bg2);color:var(--t2);transition:all .12s}
+.open-btn-s2{background:rgba(46,158,107,.12);color:#2E9E6B;border-color:rgba(46,158,107,.3)}
+.close-btn-s{background:rgba(224,80,80,.1);color:#E05050;border-color:rgba(224,80,80,.25)}
+.del-btn-s{background:transparent;color:var(--t3);border-color:var(--bd)}
+.slot-status-pill{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
+.slot-status-pill.open{background:rgba(46,158,107,.12);color:#2E9E6B}
+.slot-status-pill.closed{background:rgba(224,80,80,.1);color:#E05050}
+
+/* ADD SLOT */
+.add-slot-box{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad-lg);padding:16px;margin-bottom:20px}
+.add-slot-title{font-size:13px;font-weight:700;color:var(--t1);margin-bottom:14px}
+.dow-check{display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border-radius:8px;border:1px solid var(--bd2);background:var(--bg);cursor:pointer;font-size:12px;font-weight:500;color:var(--t2);transition:all .12px}
+.dow-check.on{background:var(--acc-light);border-color:rgba(76,175,138,.4);color:var(--acc-dark)}
+
+/* CANCEL HISTORY */
+.cancel-history-item{background:var(--bg2);border-radius:8px;padding:10px 12px;margin-top:8px;border-left:2px solid #E05050;font-size:12px;color:var(--t2);line-height:1.7}
+.booking-info-box{background:rgba(123,104,238,.08);border:1px solid rgba(123,104,238,.2);border-radius:var(--rad-lg);padding:14px;margin-bottom:10px;font-size:13px;line-height:1.8;color:var(--t1)}
+
+/* MISC */
+.err-msg{font-size:12px;color:var(--red);margin-top:6px;display:none}
+.empty{text-align:center;color:var(--t3);font-size:13px;padding:44px 0}
+.toast{position:fixed;bottom:74px;left:50%;transform:translateX(-50%) translateY(10px);background:#2E9E6B;color:#fff;padding:10px 20px;border-radius:20px;font-size:13px;font-weight:700;opacity:0;transition:all .3s;pointer-events:none;white-space:nowrap;z-index:999}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.loading-overlay{position:fixed;inset:0;background:rgba(255,255,255,.75);z-index:300;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px}
+.spinner{width:36px;height:36px;border:3px solid var(--bg3);border-top-color:var(--acc);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.page{display:none}.page.on{display:block}
+.pad{padding:20px}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- LOADING -->
+<div class="loading-overlay" id="loading-overlay">
+  <div class="spinner"></div>
+  <div style="font-size:13px;color:var(--t2)">잠시만요...</div>
+</div>
+
+<!-- LOGIN -->
+<div class="page on" id="pg-login">
+  <div class="hdr">
+    <div class="hdr-eyebrow">Admin Panel</div>
+    <div class="hdr-title">관리자 <span>대시보드</span></div>
+  </div>
+  <div style="padding:40px 22px">
+    <div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad-lg);padding:28px 22px">
+      <div style="font-size:32px;text-align:center;margin-bottom:14px">🔐</div>
+      <div style="font-size:16px;font-weight:700;color:var(--t1);text-align:center;margin-bottom:20px">관리자 로그인</div>
+      <div class="fg">
+        <label class="lbl">비밀번호</label>
+        <input class="inp" type="password" id="admin-pw" placeholder="비밀번호 입력" onkeydown="if(event.key==='Enter')doLogin()">
+      </div>
+      <div class="err-msg" id="login-err">비밀번호가 올바르지 않습니다.</div>
+      <button class="btn btn-acc" onclick="doLogin()" style="margin-top:6px">로그인 →</button>
+    </div>
+  </div>
+</div>
+
+<!-- 대본 관리 -->
+<div class="page" id="pg-dash">
+  <div class="hdr">
+    <div class="hdr-eyebrow">Admin · 대본 관리</div>
+    <div class="hdr-title">대본 <span>검수</span></div>
+    <div class="hdr-sub" id="dash-sub">총 0건</div>
+  </div>
+  <div class="pad">
+    <div class="stat-grid" id="dash-stats"></div>
+    <div class="filter-row" id="dash-filters"></div>
+    <div id="dash-list"></div>
+  </div>
+</div>
+
+<!-- 예약 관리 -->
+<div class="page" id="pg-schedule">
+  <div class="hdr">
+    <div class="hdr-eyebrow">Admin · 예약 관리</div>
+    <div class="hdr-title">촬영 <span>예약 관리</span></div>
+    <div class="hdr-sub" id="schedule-sub"></div>
+  </div>
+  <div class="sub-tab-row">
+    <button class="sub-tab on" id="sub-slots" onclick="switchSubTab('slots')">슬롯 관리</button>
+    <button class="sub-tab" id="sub-bookings" onclick="switchSubTab('bookings')">예약 내역</button>
+  </div>
+  <div id="sub-slots-content" class="pad">
+    <div class="add-slot-box">
+      <div class="add-slot-title">➕ 새 촬영 슬롯 추가</div>
+      <div style="margin-bottom:12px">
+        <label class="lbl">날짜 (단일이면 같은 날짜로 입력)</label>
+        <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px">
+          <input class="inp" type="date" id="slot-date-from">
+          <span style="color:var(--t3);font-size:13px">~</span>
+          <input class="inp" type="date" id="slot-date-to">
+        </div>
+        <div style="margin-top:8px">
+          <label class="lbl">요일</label>
+          <div style="display:flex;gap:6px;flex-wrap:wrap" id="dow-checks"></div>
+        </div>
+      </div>
+      <div style="margin-bottom:12px">
+        <label class="lbl">촬영 시간</label>
+        <div style="display:flex;align-items:center;gap:6px">
+          <select class="inp" id="sel-ampm" onchange="syncTimeInput()" style="flex:1;font-size:15px;padding:11px 8px">
+            <option value="AM">오전</option>
+            <option value="PM">오후</option>
+          </select>
+          <select class="inp" id="sel-h" onchange="syncTimeInput()" style="flex:1;font-size:15px;padding:11px 8px"></select>
+          <span style="color:var(--t2);font-size:18px;font-weight:700">:</span>
+          <select class="inp" id="sel-m" onchange="syncTimeInput()" style="flex:1;font-size:15px;padding:11px 8px"></select>
+        </div>
+        <input type="hidden" id="slot-start">
+      </div>
+      <div class="err-msg" id="slot-err"></div>
+      <button class="btn btn-green" onclick="addSlot()">슬롯 추가하기</button>
+    </div>
+    <div class="filter-row" id="slot-filters"></div>
+    <div id="slot-list"></div>
+  </div>
+  <div id="sub-bookings-content" style="display:none" class="pad">
+    <div class="filter-row" id="booking-filters"></div>
+    <div id="booking-list"></div>
+  </div>
+</div>
+
+<!-- 대본 상세 -->
+<div class="page" id="pg-detail">
+  <div class="hdr">
+    <div class="hdr-eyebrow">Admin Panel</div>
+    <div class="hdr-title" id="detail-title">상세 보기</div>
+    <div class="hdr-sub" id="detail-sub"></div>
+  </div>
+  <div class="pad">
+    <button class="back-btn" onclick="go('pg-dash');loadDash()">← 목록으로</button>
+    <div class="detail-section">
+      <div class="detail-section-title">수강생 정보</div>
+      <div class="info-box" id="detail-info"></div>
+    </div>
+    <div class="detail-section">
+      <div class="detail-section-title">제출 대본</div>
+      <div id="detail-scripts"></div>
+    </div>
+    <div class="detail-section">
+      <div class="detail-section-title">관리자 메모 <span style="font-size:10px;color:var(--t3);font-weight:400;text-transform:none">(수강생에게 표시됨)</span></div>
+      <textarea class="inp" id="detail-note" placeholder="재작성 필요 시 피드백을 남겨주세요..."></textarea>
+    </div>
+    <div class="detail-section">
+      <div class="detail-section-title">상태 변경</div>
+      <div class="status-btn-grid" id="detail-status-btns"></div>
+    </div>
+    <button class="btn btn-out" onclick="go('pg-dash')" style="margin-top:8px">← 목록으로</button>
+  </div>
+</div>
+
+<!-- 예약 상세 -->
+<div class="page" id="pg-booking-detail">
+  <div class="hdr">
+    <div class="hdr-eyebrow">Admin · 예약 내역</div>
+    <div class="hdr-title" id="bd-title">예약 상세</div>
+    <div class="hdr-sub" id="bd-sub"></div>
+  </div>
+  <div class="pad">
+    <button class="back-btn" onclick="go('pg-schedule');switchSubTab('bookings')">← 예약 내역으로</button>
+    <div class="detail-section">
+      <div class="detail-section-title">수강생 정보</div>
+      <div class="info-box" id="bd-info"></div>
+    </div>
+    <div class="detail-section">
+      <div class="detail-section-title">예약 취소 <span style="font-size:10px;color:var(--t3);font-weight:400;text-transform:none">(내부 기록용, 수강생 비공개)</span></div>
+      <div class="booking-info-box" id="bd-booking-box"></div>
+      <div id="bd-cancel-form">
+        <label class="lbl">취소 사유</label>
+        <textarea class="inp" id="bd-cancel-reason" placeholder="취소 사유를 입력해 주세요..." style="margin-bottom:10px"></textarea>
+        <button class="btn" style="background:rgba(224,80,80,.12);color:#E05050;border:1px solid rgba(224,80,80,.25)" onclick="doCancel()">예약 취소하기</button>
+      </div>
+    </div>
+    <div class="detail-section" id="bd-history-section" style="display:none">
+      <div class="detail-section-title">취소 이력</div>
+      <div id="bd-history-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 하단 탭바 -->
+<div class="tab-bar" id="tab-bar" style="display:none">
+  <button class="tab-item on" id="tab-dash" onclick="switchTab('dash')">
+    <span class="tab-icon">📋</span>대본 관리
+  </button>
+  <button class="tab-item" id="tab-schedule" onclick="switchTab('schedule')">
+    <span class="tab-icon">📅</span>예약 관리
+  </button>
+</div>
+
+</div>
+<div class="toast" id="toast"></div>
+</body>
+</html>
