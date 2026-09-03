@@ -13,12 +13,12 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
   const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
@@ -471,42 +471,91 @@
       allData=await getAllSubmissions(); // 캐시 사용
       allData=await autoComplete(allData);
       const withBooking=Object.values(allData).filter(r=>r.booking);
-      const active=withBooking.filter(r=>!r.booking.cancelledAt).length;
-      const cancelled=withBooking.filter(r=>r.booking.cancelledAt).length;
+
+      const now=new Date();
+
+      // 예약 중 + 취소 = 현재 진행중, 촬영완료 = 지난 것
+      const active=withBooking.filter(r=>r.status!=='completed'&&!r.booking.cancelledAt);
+      const cancelled=withBooking.filter(r=>r.booking.cancelledAt);
+      const completed=withBooking.filter(r=>r.status==='completed');
+
       const filterDefs=[
         {k:'all',label:`전체 (${withBooking.length})`},
-        {k:'active',label:`예약 중 (${active})`},
-        {k:'cancelled',label:`취소 포함 (${cancelled})`},
+        {k:'active',label:`예약 중 (${active.length})`},
+        {k:'cancelled',label:`취소 포함 (${cancelled.length})`},
       ];
       document.getElementById('booking-filters').innerHTML=filterDefs
         .map(f=>`<button class="ftag${bookingFilter===f.k?' on':''}" onclick="setBookingFilter('${f.k}')">${f.label}</button>`).join('');
-      const filtered=withBooking.filter(r=>
-        bookingFilter==='all'||(bookingFilter==='active'&&!r.booking.cancelledAt)||(bookingFilter==='cancelled'&&r.booking.cancelledAt)
-      ).sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt));
+
+      // 필터 적용 (촬영완료는 별도 섹션으로)
+      let filtered=withBooking.filter(r=>{
+        if(bookingFilter==='active') return r.status!=='completed'&&!r.booking.cancelledAt;
+        if(bookingFilter==='cancelled') return !!r.booking.cancelledAt;
+        return true;
+      });
+
+      // 최신 예약순 정렬 (예약일 기준)
+      const parseBookingDate=r=>{
+        try{
+          const [y,m,d]=r.booking.date.replace(/[년월일 ]/g,'-').split('-').filter(Boolean).map(Number);
+          const [h,min]=r.booking.time.split(':').map(Number);
+          return new Date(y,m-1,d,h,min);
+        }catch{return new Date(0);}
+      };
+
+      const activeFiltered=filtered.filter(r=>r.status!=='completed').sort((a,b)=>parseBookingDate(b)-parseBookingDate(a));
+      const completedFiltered=filtered.filter(r=>r.status==='completed').sort((a,b)=>parseBookingDate(b)-parseBookingDate(a));
+
       const el=document.getElementById('booking-list');
       if(!filtered.length){el.innerHTML=`<div class="empty">예약 내역이 없습니다.</div>`;return;}
-      el.innerHTML=filtered.map(r=>{
+
+      function renderBookingCard(r){
         const isCancelled=!!r.booking.cancelledAt;
+        const isCompleted=r.status==='completed';
         const histCount=(r.booking.cancelHistory||[]).length;
+        let statusColor='#7B68EE', statusBg='rgba(123,104,238,.12)', statusLabel='예약 중';
+        if(isCancelled){statusColor='#999';statusBg='#f0f0f0';statusLabel='취소됨';}
+        if(isCompleted){statusColor='#1ABC9C';statusBg='rgba(26,188,156,.12)';statusLabel='촬영 완료';}
         return `<div class="booking-card${isCancelled?' cancelled':''}" onclick="openBookingDetail('${r.key}')">
           <div style="display:flex;justify-content:space-between;align-items:flex-start">
             <div>
               <div class="rec-name">${r.cohort} ${r.name}</div>
               <div class="rec-meta">${r.phone}</div>
-              <div class="rec-date${isCancelled?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
+              <div class="rec-date${isCancelled||isCompleted?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
               ${histCount>0?`<div style="font-size:11px;color:#E05050;margin-top:3px">취소 이력 ${histCount}건</div>`:''}
             </div>
             <div style="display:flex;align-items:center;gap:8px">
-              <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${isCancelled?'#999':'#7B68EE'};background:${isCancelled?'#f0f0f0':'rgba(123,104,238,.12)'}">
-                ${isCancelled?'취소됨':'예약 중'}
-              </span>
+              <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${statusColor};background:${statusBg}">${statusLabel}</span>
               <button onclick="deleteRecord('${r.key}',event)" style="width:24px;height:24px;border-radius:50%;border:1px solid #ddd;background:#f5f5f5;color:#999;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">×</button>
             </div>
           </div>
         </div>`;
-      }).join('');
+      }
+
+      let html=activeFiltered.map(renderBookingCard).join('');
+
+      if(completedFiltered.length>0){
+        html+=`
+          <div style="margin-top:8px">
+            <button onclick="togglePastBookings()" id="past-bookings-toggle-btn"
+              style="width:100%;padding:10px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad);font-size:13px;font-weight:600;color:var(--t2);cursor:pointer;font-family:inherit;text-align:left">
+              ▸ 촬영 완료 ${completedFiltered.length}건 보기
+            </button>
+            <div id="past-bookings" style="display:none;margin-top:8px">${completedFiltered.map(renderBookingCard).join('')}</div>
+          </div>`;
+      }
+
+      el.innerHTML=html;
     }finally{showLoading(false);}
   }
+
+  window.togglePastBookings=function(){
+    const el=document.getElementById('past-bookings');
+    const btn=document.getElementById('past-bookings-toggle-btn');
+    const isHidden=el.style.display==='none';
+    el.style.display=isHidden?'block':'none';
+    btn.textContent=isHidden?`▾ 촬영 완료 접기`:`▸ 촬영 완료 보기`;
+  };
 
   window.setBookingFilter=function(f){bookingFilter=f;loadBookings();};
 
