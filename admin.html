@@ -553,7 +553,6 @@
               <div class="rec-name">${r.cohort} ${r.name}</div>
               <div class="rec-meta">${r.phone}</div>
               <div class="rec-date${isCancelled||isCompleted?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
-              ${r.notionLink?`<div style="margin-top:4px"><a href="${r.notionLink}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:11px;color:#4A90E2;word-break:break-all;">📄 노션 대본 열기</a></div>`:''}
               ${histCount>0?`<div style="font-size:11px;color:#E05050;margin-top:3px">취소 이력 ${histCount}건</div>`:''}
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px">
@@ -606,7 +605,8 @@
          ['상태',isCancelled
            ?`<span style="color:#999">취소됨 (${new Date(rec.booking.cancelledAt).toLocaleDateString('ko-KR')})</span>`
            :`<span style="color:#7B68EE;font-weight:700">예약 중</span>`]
-        ].map(([k,v])=>`<div class="info-row"><span class="info-k">${k}</span><span class="info-v">${v}</span></div>`).join('');
+        ].map(([k,v])=>`<div class="info-row"><span class="info-k">${k}</span><span class="info-v">${v}</span></div>`).join('')
+        +(rec.notionLink?`<div class="info-row"><span class="info-k">노션 대본</span><span class="info-v"><a href="${rec.notionLink}" target="_blank" rel="noopener" style="color:#4A90E2">열기 →</a></span></div>`:'');
 
       document.getElementById('bd-booking-box').innerHTML=
         `<div>📅 <strong${isCancelled?' style="text-decoration:line-through;color:#bbb"':''}>${rec.booking.date}</strong></div>
