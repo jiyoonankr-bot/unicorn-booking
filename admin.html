@@ -13,12 +13,12 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
   const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
@@ -225,24 +225,54 @@
 
   function renderDashList(){
     const el=document.getElementById('dash-list');
-    const list=Object.values(allData).filter(r=>adminFilter==='all'||r.status===adminFilter)
-      .sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt));
-    if(!list.length){el.innerHTML=`<div class="empty">해당 상태의 제출 내역이 없습니다.</div>`;return;}
-    el.innerHTML=list.map(r=>`
-      <div class="rec-card" onclick="openDetail('${r.key}')">
+    const sortKey=r=>r.updatedAt||r.submittedAt||'';
+    const all=Object.values(allData).filter(r=>adminFilter==='all'||r.status===adminFilter)
+      .sort((a,b)=>sortKey(b).localeCompare(sortKey(a)));
+
+    if(!all.length){el.innerHTML=`<div class="empty">해당 상태의 제출 내역이 없습니다.</div>`;return;}
+
+    const active=all.filter(r=>r.status!=='completed');
+    const completed=all.filter(r=>r.status==='completed');
+
+    function renderCard(r){
+      return `<div class="rec-card" onclick="openDetail('${r.key}')">
         <div style="display:flex;justify-content:space-between;align-items:flex-start">
           <div>
             <div class="rec-name">${r.cohort} ${r.name}</div>
             <div class="rec-meta">${r.phone}</div>
-            <div class="rec-date">제출: ${new Date(r.submittedAt).toLocaleDateString('ko-KR')}</div>
+            <div class="rec-date">${r.updatedAt?'업데이트: '+new Date(r.updatedAt).toLocaleDateString('ko-KR'):'제출: '+new Date(r.submittedAt).toLocaleDateString('ko-KR')}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             ${badge(r.status)}
             <button onclick="deleteRecord('${r.key}',event)" style="width:24px;height:24px;border-radius:50%;border:1px solid #ddd;background:#f5f5f5;color:#999;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">×</button>
           </div>
         </div>
-      </div>`).join('');
+      </div>`;
+    }
+
+    let html=active.map(renderCard).join('');
+
+    if(completed.length>0){
+      html+=`
+        <div style="margin-top:8px">
+          <button onclick="toggleCompletedDash()" id="completed-dash-btn"
+            style="width:100%;padding:10px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad);font-size:13px;font-weight:600;color:var(--t2);cursor:pointer;font-family:inherit;text-align:left">
+            ▸ 촬영 완료 ${completed.length}명 보기
+          </button>
+          <div id="completed-dash-list" style="display:none;margin-top:8px">${completed.map(renderCard).join('')}</div>
+        </div>`;
+    }
+
+    el.innerHTML=html;
   }
+
+  window.toggleCompletedDash=function(){
+    const el=document.getElementById('completed-dash-list');
+    const btn=document.getElementById('completed-dash-btn');
+    const isHidden=el.style.display==='none';
+    el.style.display=isHidden?'block':'none';
+    btn.textContent=isHidden?'▾ 촬영 완료 접기':'▸ 촬영 완료 보기';
+  };
 
   window.openDetail=async function(key){
     showLoading(true);
@@ -281,7 +311,7 @@
     try{
       allData=await getAllSubmissions();
       const note=document.getElementById('detail-note').value;
-      const updated={...allData[detailKey],status,adminNote:note};
+      const updated={...allData[detailKey],status,adminNote:note,updatedAt:new Date().toISOString()};
       await saveSubmission(detailKey,updated);
       showToast('✓ 상태가 변경되었습니다');
       await openDetail(detailKey);
@@ -518,13 +548,14 @@
         if(isCompleted){statusColor='#1ABC9C';statusBg='rgba(26,188,156,.12)';statusLabel='촬영 완료';}
         return `<div class="booking-card${isCancelled?' cancelled':''}" onclick="openBookingDetail('${r.key}')">
           <div style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div>
+            <div style="flex:1;min-width:0">
               <div class="rec-name">${r.cohort} ${r.name}</div>
               <div class="rec-meta">${r.phone}</div>
               <div class="rec-date${isCancelled||isCompleted?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
+              ${r.notionLink?`<div style="margin-top:4px"><a href="${r.notionLink}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:11px;color:#4A90E2;word-break:break-all;">📄 노션 대본 열기</a></div>`:''}
               ${histCount>0?`<div style="font-size:11px;color:#E05050;margin-top:3px">취소 이력 ${histCount}건</div>`:''}
             </div>
-            <div style="display:flex;align-items:center;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px">
               <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;color:${statusColor};background:${statusBg}">${statusLabel}</span>
               <button onclick="deleteRecord('${r.key}',event)" style="width:24px;height:24px;border-radius:50%;border:1px solid #ddd;background:#f5f5f5;color:#999;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;line-height:1">×</button>
             </div>
