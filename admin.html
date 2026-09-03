@@ -13,12 +13,12 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
   const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
@@ -313,6 +313,7 @@
       const note=document.getElementById('detail-note').value;
       const updated={...allData[detailKey],status,adminNote:note,updatedAt:new Date().toISOString()};
       await saveSubmission(detailKey,updated);
+      _cache.submissions=null; // 캐시 강제 초기화
       showToast('✓ 상태가 변경되었습니다');
       await openDetail(detailKey);
     }finally{showLoading(false);}
@@ -885,7 +886,7 @@ textarea.inp{resize:vertical;min-height:72px;line-height:1.6}
     <div class="hdr-sub" id="detail-sub"></div>
   </div>
   <div class="pad">
-    <button class="back-btn" onclick="go('pg-dash');loadDash()">← 목록으로</button>
+    <button class="back-btn" onclick="go('pg-dash');_cache.submissions=null;loadDash()">← 목록으로</button>
     <div class="detail-section">
       <div class="detail-section-title">수강생 정보</div>
       <div class="info-box" id="detail-info"></div>
