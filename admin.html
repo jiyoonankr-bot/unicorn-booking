@@ -13,15 +13,15 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
-  const ADMIN_PASS = 'dbslzhs157600@@'; // ← 비밀번호 변경하세요
+  const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
 
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
@@ -316,35 +316,66 @@
       const el=document.getElementById('slot-list');
       if(!filtered.length){el.innerHTML=`<div class="empty">슬롯이 없습니다.</div>`;return;}
 
-      const grouped={};
-      filtered.forEach(s=>{if(!grouped[s.date])grouped[s.date]=[];grouped[s.date].push(s);});
+      const today=new Date(); today.setHours(0,0,0,0);
+      const upcoming=[], past=[];
+      filtered.forEach(s=>{
+        const d=new Date(s.date+'T00:00:00');
+        if(d>=today) upcoming.push(s); else past.push(s);
+      });
 
-      el.innerHTML=Object.entries(grouped).map(([date,arr])=>{
-        const d=new Date(date+'T00:00:00');
-        const label=d.toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'});
-        return `<div class="slot-date-group">
-          <div class="slot-date-label">📆 ${label}</div>
-          ${arr.map(s=>`
-            <div class="slot-card${s.open?'':' closed'}">
-              <div style="flex:1">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span class="slot-time">${fmtTime(s.startTime)}</span>
-                  <span class="slot-status-pill ${s.open?'open':'closed'}">${s.open?'오픈':'마감'}</span>
+      function renderGroup(slots){
+        const grouped={};
+        slots.forEach(s=>{if(!grouped[s.date])grouped[s.date]=[];grouped[s.date].push(s);});
+        return Object.entries(grouped).map(([date,arr])=>{
+          const d=new Date(date+'T00:00:00');
+          const label=d.toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'short'});
+          return `<div class="slot-date-group">
+            <div class="slot-date-label">📆 ${label}</div>
+            ${arr.map(s=>`
+              <div class="slot-card${s.open?'':' closed'}">
+                <div style="flex:1">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span class="slot-time">${fmtTime(s.startTime)}</span>
+                    <span class="slot-status-pill ${s.open?'open':'closed'}">${s.open?'오픈':'마감'}</span>
+                  </div>
                 </div>
-              </div>
-              <div class="slot-actions">
-                ${s.open
-                  ?`<button class="slot-btn close-btn-s" data-id="${s.id}" data-action="close">마감</button>`
-                  :`<button class="slot-btn open-btn-s2" data-id="${s.id}" data-action="open">오픈</button>`}
-                <button class="slot-btn del-btn-s" data-id="${s.id}" data-action="del">삭제</button>
-              </div>
-            </div>`).join('')}
-        </div>`;
-      }).join('');
+                <div class="slot-actions">
+                  ${s.open
+                    ?`<button class="slot-btn close-btn-s" data-id="${s.id}" data-action="close">마감</button>`
+                    :`<button class="slot-btn open-btn-s2" data-id="${s.id}" data-action="open">오픈</button>`}
+                  <button class="slot-btn del-btn-s" data-id="${s.id}" data-action="del">삭제</button>
+                </div>
+              </div>`).join('')}
+          </div>`;
+        }).join('');
+      }
+
+      let html = renderGroup(upcoming);
+
+      if(past.length>0){
+        html += `
+          <div style="margin-top:8px">
+            <button onclick="togglePast()" id="past-toggle-btn"
+              style="width:100%;padding:10px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rad);font-size:13px;font-weight:600;color:var(--t2);cursor:pointer;font-family:inherit;text-align:left">
+              ▸ 지난 슬롯 ${past.length}개 보기
+            </button>
+            <div id="past-slots" style="display:none;margin-top:8px">${renderGroup(past)}</div>
+          </div>`;
+      }
+
+      el.innerHTML=html;
     }finally{showLoading(false);}
   }
 
   window.setSlotFilter=function(f){slotFilter=f;loadSchedule();};
+
+  window.togglePast=function(){
+    const el=document.getElementById('past-slots');
+    const btn=document.getElementById('past-toggle-btn');
+    const isHidden=el.style.display==='none';
+    el.style.display=isHidden?'block':'none';
+    btn.textContent=isHidden?`▾ 지난 슬롯 접기`:`▸ 지난 슬롯 보기`;
+  };
 
   document.addEventListener('click',async e=>{
     const btn=e.target.closest('[data-action]');
