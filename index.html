@@ -12,12 +12,12 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
   const app = initializeApp(firebaseConfig);
@@ -257,7 +257,9 @@
     if (!document.getElementById('public-confirm').checked) { showErr(errEl,'시크릿 창에서 공개 여부를 확인하고 체크해 주세요.'); return; }
     hideErr(errEl);
     const key = userKey(user);
-    const rec = { ...user, key, notionLink, status:'submitted', submittedAt:new Date().toISOString(), adminNote:'', booking:null };
+    const now = new Date().toISOString();
+    const existing = (await getAllSubmissions())[key];
+    const rec = { ...user, key, notionLink, status:'submitted', submittedAt: existing?.submittedAt||now, updatedAt: now, adminNote:'', booking:null };
     showLoading(true);
     try {
       await saveSubmission(key, rec);
