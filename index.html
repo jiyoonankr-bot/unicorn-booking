@@ -24,7 +24,7 @@
   const db = getFirestore(app);
 
   // ── 주소·주차 안내 (여기서 수정하세요) ──────────────
-  const STUDIO_ADDRESS = '서울특별시 마포구 서교동 351-11 이혜빌딩 5층';
+  const STUDIO_ADDRESS = '서울특별시 마포구 서교동 351-11 이혜빌딩 3층';
   const PARKING_INFO = '근처 경남주차장이 유료로 운영되고 있으니 이용해주세요.';
 
   const STORE_COL = 'submissions';
@@ -91,12 +91,10 @@
     try { await Promise.all([getAllSubmissions(true), getAllSlots(true)]); }
     finally { showLoading(false); }
   }
-  // DOM 준비 후 preload
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', preload);
-  } else {
-    preload();
-  }
+  // DOM 준비 후 go 함수 초기화만
+  window.addEventListener('load', () => {
+    go('pg-entry');
+  });
   async function autoComplete(data) {
     const now = new Date();
     for (const rec of Object.values(data)) {
@@ -256,12 +254,12 @@
     if (!notionLink.startsWith('http')) { showErr(errEl,'올바른 URL 형식으로 입력해 주세요.'); return; }
     if (!document.getElementById('public-confirm').checked) { showErr(errEl,'시크릿 창에서 공개 여부를 확인하고 체크해 주세요.'); return; }
     hideErr(errEl);
-    const key = userKey(user);
-    const now = new Date().toISOString();
-    const existing = (await getAllSubmissions())[key];
-    const rec = { ...user, key, notionLink, status:'submitted', submittedAt: existing?.submittedAt||now, updatedAt: now, adminNote:'', booking:null };
     showLoading(true);
     try {
+      const key = userKey(user);
+      const now = new Date().toISOString();
+      const existing = (_cache.submissions||{})[key];
+      const rec = { ...user, key, notionLink, status:'submitted', submittedAt: existing?.submittedAt||now, updatedAt: now, adminNote:'', booking:null };
       await saveSubmission(key, rec);
       renderStatus(rec);
       go('pg-status');
