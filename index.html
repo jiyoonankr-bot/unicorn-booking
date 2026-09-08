@@ -134,9 +134,10 @@
     const pClean = p.replace(/\D/g,'');
     showLoading(true);
     try {
-      const allData = await getAllSubmissions();
-      const processed = await autoComplete(allData);
-      const records = Object.values(processed);
+      const allData = await getAllSubmissions(true);
+      // autoComplete는 별도로 실행 (실패해도 메인 플로우 영향 없게)
+      try { await autoComplete(allData); } catch(e2) { console.warn('autoComplete error:', e2); }
+      const records = Object.values(allData);
       const exact = records.find(r => r.cohort===c && r.name===n && r.phone.replace(/\D/g,'')===pClean);
       if (exact) { user={cohort:c,name:n,phone:pClean}; renderStatus(exact); go('pg-status'); return; }
       const byNameCohort = records.find(r => r.cohort===c && r.name===n);
@@ -149,6 +150,9 @@
       user = {cohort:c, name:n, phone:pClean};
       buildScripts();
       go('pg-scripts');
+    } catch(err) {
+      showErr(e, '오류가 발생했습니다. 다시 시도해 주세요.');
+      console.error('identSubmit error:', err);
     } finally { showLoading(false); }
   };
 
@@ -182,11 +186,13 @@
   window.refreshStatus = async function() {
     showLoading(true);
     try {
-      const allData = await getAllSubmissions(true); // 새로고침만 Firestore 재조회
-      const processed = await autoComplete(allData);
+      const allData = await getAllSubmissions(true);
+      try { await autoComplete(allData); } catch(e2) { console.warn('autoComplete error:', e2); }
       const key = userKey(user);
-      const rec = processed[key];
+      const rec = allData[key];
       if (rec) renderStatus(rec);
+    } catch(err) {
+      console.error('refreshStatus error:', err);
     } finally { showLoading(false); }
   };
 
