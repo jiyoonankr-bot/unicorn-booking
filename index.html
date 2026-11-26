@@ -12,19 +12,20 @@
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
 
   // ── 주소·주차 안내 (여기서 수정하세요) ──────────────
-  const STUDIO_ADDRESS = '서울특별시 마포구 서교동 351-11 이혜빌딩 5층';
+  const BOOKING_NOTICE = `<div style="background:#FFF8E6;border:1px solid #F0D890;border-radius:10px;padding:14px;margin-top:14px;font-size:12.5px;line-height:1.75;color:#6B5A20"><div style="font-weight:700;margin-bottom:6px">[촬영 예약 확정 안내]</div>촬영 예약 신청 후 담당자가 일정을 확인하여 촬영 전용 단톡방으로 초대드리며, 확정된 일정 및 세부 사항을 안내드립니다.<br>촬영 단톡방에 초대되기 전까지는 예약이 확정된 상태가 아니므로, 반드시 확정 안내를 받으신 후 방문 부탁드립니다.<br>예약 신청 순서에 따라 순차적으로 안내드리고 있으니, 확정 안내까지 조금만 기다려 주시면 감사하겠습니다.</div>`;
+  const STUDIO_ADDRESS = '서울특별시 마포구 서교동 351-11 이혜빌딩 3층';
   const PARKING_INFO = '근처 경남주차장이 유료로 운영되고 있으니 이용해주세요.';
 
   const STORE_COL = 'submissions';
@@ -91,10 +92,8 @@
     try { await Promise.all([getAllSubmissions(true), getAllSlots(true)]); }
     finally { showLoading(false); }
   }
-  // DOM 준비 후 go 함수 초기화만
-  window.addEventListener('load', () => {
-    go('pg-entry');
-  });
+  // 백그라운드 preload (로딩 화면 없이)
+  Promise.all([getAllSubmissions(true), getAllSlots(true)]).catch(e => console.warn('preload error:', e));
   async function autoComplete(data) {
     const now = new Date();
     for (const rec of Object.values(data)) {
@@ -134,7 +133,7 @@
     const pClean = p.replace(/\D/g,'');
     showLoading(true);
     try {
-      const allData = await getAllSubmissions(true);
+      const allData = await getAllSubmissions(); // 캐시 사용
       // autoComplete는 별도로 실행 (실패해도 메인 플로우 영향 없게)
       try { await autoComplete(allData); } catch(e2) { console.warn('autoComplete error:', e2); }
       const records = Object.values(allData);
@@ -168,7 +167,7 @@
     if (rec.status==='completed' && rec.booking) {
       ae.innerHTML = `<div class="done-box"><div class="done-box-title">🎥 촬영 완료</div><div class="done-box-body">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}</div></div>`;
     } else if (rec.status==='booked' && rec.booking) {
-      ae.innerHTML = `<div class="done-box" style="background:#F0EEFF;border-color:rgba(123,104,238,.2)"><div class="done-box-title" style="color:#7B68EE">🎬 예약 완료</div><div class="done-box-body">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}<br>📍 ${STUDIO_ADDRESS}</div></div>`;
+      ae.innerHTML = `<div class="done-box" style="background:#F0EEFF;border-color:rgba(123,104,238,.2)"><div class="done-box-title" style="color:#7B68EE">🎬 예약 완료</div><div class="done-box-body">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}</div></div>${BOOKING_NOTICE}`;
     } else if (rec.status==='approved' && rec.booking?.cancelledAt) {
       ae.innerHTML = `<div class="done-box" style="background:#F5F5F5;border-color:#ddd"><div class="done-box-title" style="color:#999">취소된 예약</div><div class="done-box-body" style="text-decoration:line-through;color:#bbb">📅 ${rec.booking.date}<br>⏰ ${fmtTime(rec.booking.time)}</div><div style="font-size:12px;color:#E05050;margin-top:6px">관리자에 의해 취소되었습니다. 새로운 일정을 예약해 주세요.</div></div>
       <button class="btn btn-acc" onclick="openCalendar()" style="margin-top:12px">📅 새 일정 예약하기 →</button>`;
@@ -370,9 +369,7 @@
   window.openConfirmModal = function() {
     const dateStr = calY+'년 '+MONTHS[calM]+' '+selDay+'일';
     document.getElementById('modal-info').innerHTML =
-      `<div style="color:#2E9E6B;font-weight:700;margin-bottom:4px">사무실 주소</div>
-       <div style="margin-bottom:10px">${STUDIO_ADDRESS}</div>
-       <div><span style="color:#888">신청일 : </span><strong>${dateStr}</strong></div>
+      `<div><span style="color:#888">신청일 : </span><strong>${dateStr}</strong></div>
        <div><span style="color:#888">신청시간 : </span><strong>${fmtTime(selTime)}</strong></div>
        <div><span style="color:#888">신청자 : </span><strong>${user.name}</strong></div>`;
     document.getElementById('modal-overlay').style.display = 'flex';
@@ -392,8 +389,9 @@
       const prev = allData[key];
       const prevHistory = prev?.booking?.cancelHistory || [];
       const rec = {...prev, status:'booked', booking:{
-        date:dateStr, time:selTime, slotId:selSlot?.id||null, cancelHistory:prevHistory
-      }};
+        date:dateStr, time:selTime, slotId:selSlot?.id||null, cancelHistory:prevHistory,
+        bookedAt:new Date().toISOString()
+      }, updatedAt:new Date().toISOString()};
       await saveSubmission(key, rec);
       if (selSlot?.id) {
         const slotsData = await getAllSlots();
@@ -402,11 +400,7 @@
       document.getElementById('done-info').innerHTML =
         `<div style="margin-bottom:2px"><span style="color:#888">신청자 : </span><strong>${rec.cohort} ${rec.name}</strong></div>
          <div style="margin-bottom:2px"><span style="color:#888">촬영 날짜 : </span><strong>${rec.booking.date}</strong></div>
-         <div style="margin-bottom:14px"><span style="color:#888">촬영 시간 : </span><strong>${fmtTime(rec.booking.time)}</strong></div>
-         <div style="color:#2E9E6B;font-weight:700;margin-bottom:4px">사무실 주소</div>
-         <div style="margin-bottom:12px">${STUDIO_ADDRESS}</div>
-         <div style="color:#2E9E6B;font-weight:700;margin-bottom:4px">주차 안내</div>
-         <div>${PARKING_INFO}</div>`;
+         <div><span style="color:#888">촬영 시간 : </span><strong>${fmtTime(rec.booking.time)}</strong></div>` + BOOKING_NOTICE;
       go('pg-done');
     } finally { showLoading(false); }
   };
