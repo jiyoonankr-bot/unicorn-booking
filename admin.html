@@ -8,17 +8,18 @@
 <meta name="robots" content="noindex,nofollow">
 <!-- Firebase SDK -->
 <script type="module">
+  const fmtDT=iso=>{const d=new Date(iso),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}.${p(d.getMonth()+1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;};
   import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
   import { getFirestore, doc, getDoc, setDoc, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
 
   // ── Firebase 설정 (직접 채워넣으세요) ──────────────
   const firebaseConfig = {
-    apiKey: "AIzaSyCoietTJaa5VMCp84HFb4zEPJBshKLQ8f0",
-    authDomain: "unicorn-booking-39da6.firebaseapp.com",
-    projectId: "unicorn-booking-39da6",
-    storageBucket: "unicorn-booking-39da6.firebasestorage.app",
-    messagingSenderId: "321266129675",
-    appId: "1:321266129675:web:5a285877a7498f477a600e"
+    apiKey: "여기에_입력",
+    authDomain: "여기에_입력",
+    projectId: "여기에_입력",
+    storageBucket: "여기에_입력",
+    messagingSenderId: "여기에_입력",
+    appId: "여기에_입력"
   };
 
   const ADMIN_PASS = 'admin1234'; // ← 비밀번호 변경하세요
@@ -553,6 +554,7 @@
               <div class="rec-name">${r.cohort} ${r.name}</div>
               <div class="rec-meta">${r.phone}</div>
               <div class="rec-date${isCancelled||isCompleted?' cancelled-text':''}">📅 ${r.booking.date} &nbsp; ⏰ ${fmtTime(r.booking.time)}</div>
+              ${r.booking.bookedAt?`<div style="font-size:11px;color:#9AB5A8;margin-top:3px">예약 일시 ${fmtDT(r.booking.bookedAt)}</div>`:''}
               ${histCount>0?`<div style="font-size:11px;color:#E05050;margin-top:3px">취소 이력 ${histCount}건</div>`:''}
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;margin-left:8px">
@@ -602,6 +604,7 @@
       document.getElementById('bd-info').innerHTML=
         [['기수',rec.cohort],['이름',rec.name],['전화번호',rec.phone],
          ['예약일',rec.booking.date],['예약 시간',fmtTime(rec.booking.time)],
+         ['예약 일시',rec.booking.bookedAt?fmtDT(rec.booking.bookedAt):'-'],
          ['상태',isCancelled
            ?`<span style="color:#999">취소됨 (${new Date(rec.booking.cancelledAt).toLocaleDateString('ko-KR')})</span>`
            :`<span style="color:#7B68EE;font-weight:700">예약 중</span>`]
